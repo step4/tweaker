@@ -190,7 +190,7 @@ impl State {
                             new_idx,
                             Token {
                                 text: String::new(),
-                                quoted: false,
+                                original: String::new(),
                             },
                         );
                         (
@@ -243,7 +243,7 @@ impl State {
                     self.status = Some("insert cancelled".into());
                 } else {
                     self.tokens[idx].text = text;
-                    self.tokens[idx].quoted = tokens::needs_quote(&self.tokens[idx].text);
+                    self.tokens[idx].original = tokens::quote_for_render(&self.tokens[idx].text);
                     self.status = Some(format!("edited token {}", idx + 1));
                 }
                 (Mode::Normal, Outcome::Continue)

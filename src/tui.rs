@@ -367,11 +367,7 @@ fn build_editing_view(
             past_edited = true;
             continue;
         }
-        let rendered = if t.quoted || t.text.is_empty() {
-            shell_words::quote(&t.text).into_owned()
-        } else {
-            t.text.clone()
-        };
+        let rendered = t.original.clone();
         if past_edited {
             after.push_str(sep);
             after.push_str(&rendered);

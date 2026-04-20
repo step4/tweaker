@@ -2,35 +2,118 @@ use anyhow::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
+    /// Logical (unquoted) value — what the shell sees.
     pub text: String,
-    /// True if the token was produced from a quoted segment — preserve quoting on render.
-    pub quoted: bool,
+    /// Exact form as it appeared in the original command (e.g. `'^g'`).
+    /// Used verbatim on render so quoting style is never lost.
+    /// After an edit, recomputed via `quote_for_render`.
+    pub original: String,
 }
 
+/// Split `cmd` into tokens, preserving each token's original quoting.
+/// Unlike `shell_words::split`, this keeps `text` (logical) and `original`
+/// (source form including quotes) so that `render` can reconstruct exactly.
 pub fn split(cmd: &str) -> Result<Vec<Token>> {
-    // shell-words strips quoting. We still want to roundtrip safely, so re-quote on render.
-    let parts = shell_words::split(cmd)?;
-    Ok(parts
-        .into_iter()
-        .map(|t| {
-            let q = needs_quote(&t);
-            Token {
-                text: t,
-                quoted: q,
-            }
-        })
-        .collect())
-}
+    let mut tokens = Vec::new();
+    let mut chars = cmd.chars().peekable();
 
-pub fn needs_quote(s: &str) -> bool {
-    s.is_empty() || s.chars().any(|c| c.is_whitespace() || "\"'\\$`".contains(c))
+    loop {
+        // Skip inter-token whitespace.
+        while matches!(chars.peek(), Some(c) if c.is_whitespace()) {
+            chars.next();
+        }
+        if chars.peek().is_none() {
+            break;
+        }
+
+        let mut text = String::new();
+        let mut original = String::new();
+
+        // Consume one token (may be multiple adjacent quoted/unquoted segments).
+        loop {
+            let Some(&ch) = chars.peek() else { break };
+            if ch.is_whitespace() {
+                break;
+            }
+            chars.next();
+            match ch {
+                '\'' => {
+                    original.push('\'');
+                    loop {
+                        match chars.next() {
+                            None => anyhow::bail!("unterminated single quote in: {cmd}"),
+                            Some('\'') => {
+                                original.push('\'');
+                                break;
+                            }
+                            Some(c) => {
+                                text.push(c);
+                                original.push(c);
+                            }
+                        }
+                    }
+                }
+                '"' => {
+                    original.push('"');
+                    loop {
+                        match chars.next() {
+                            None => anyhow::bail!("unterminated double quote in: {cmd}"),
+                            Some('"') => {
+                                original.push('"');
+                                break;
+                            }
+                            Some('\\') => {
+                                original.push('\\');
+                                match chars.next() {
+                                    None => anyhow::bail!("trailing backslash in: {cmd}"),
+                                    Some(c) => {
+                                        original.push(c);
+                                        // Inside double quotes, \ only escapes these chars.
+                                        if matches!(c, '"' | '\\' | '$' | '`' | '\n') {
+                                            text.push(c);
+                                        } else {
+                                            text.push('\\');
+                                            text.push(c);
+                                        }
+                                    }
+                                }
+                            }
+                            Some(c) => {
+                                text.push(c);
+                                original.push(c);
+                            }
+                        }
+                    }
+                }
+                '\\' => {
+                    original.push('\\');
+                    match chars.next() {
+                        None => {} // trailing backslash — ignore
+                        Some('\n') => {} // line continuation
+                        Some(c) => {
+                            original.push(c);
+                            text.push(c);
+                        }
+                    }
+                }
+                c => {
+                    text.push(c);
+                    original.push(c);
+                }
+            }
+        }
+
+        tokens.push(Token { text, original });
+    }
+    Ok(tokens)
 }
 
 pub fn render(tokens: &[Token]) -> String {
     render_with_spans(tokens).0
 }
 
-/// Render joined command, and return the char-column span (start, len) of each token.
+/// Render joined command and return the char-column span (start, len) per token.
+/// Uses each token's `original` field verbatim, so quoting is preserved exactly.
 pub fn render_with_spans(tokens: &[Token]) -> (String, Vec<(usize, usize)>) {
     let mut out = String::new();
     let mut spans = Vec::with_capacity(tokens.len());
@@ -38,17 +121,18 @@ pub fn render_with_spans(tokens: &[Token]) -> (String, Vec<(usize, usize)>) {
         if i > 0 {
             out.push(' ');
         }
-        let rendered = if t.quoted || t.text.is_empty() {
-            shell_words::quote(&t.text).into_owned()
-        } else {
-            t.text.clone()
-        };
         let start = out.chars().count();
-        let len = rendered.chars().count();
-        out.push_str(&rendered);
+        let len = t.original.chars().count();
+        out.push_str(&t.original);
         spans.push((start, len));
     }
     (out, spans)
+}
+
+/// Quote `text` for re-insertion as a new token (e.g. after an edit).
+/// Uses shell_words::quote, which is correct for POSIX shells.
+pub fn quote_for_render(text: &str) -> String {
+    shell_words::quote(text).into_owned()
 }
 
 /// Selector label for each token: 1..9, then A..Z. Uppercase is deliberate —
@@ -83,14 +167,22 @@ mod tests {
     fn split_plain() {
         let t = split("git commit -m hello").unwrap();
         assert_eq!(texts(&t), ["git", "commit", "-m", "hello"]);
-        assert!(t.iter().all(|tok| !tok.quoted));
+        // No quoting — original equals text.
+        assert!(t.iter().all(|tok| tok.original == tok.text));
     }
 
     #[test]
-    fn split_strips_quotes_but_marks_quoted() {
+    fn split_preserves_double_quoted_original() {
         let t = split(r#"git commit -m "hi there""#).unwrap();
         assert_eq!(texts(&t), ["git", "commit", "-m", "hi there"]);
-        assert!(t[3].quoted, "token with whitespace must be flagged quoted");
+        assert_eq!(t[3].original, r#""hi there""#, "original must include the quotes");
+    }
+
+    #[test]
+    fn split_preserves_single_quoted_original() {
+        let t = split("bindkey '^g' tweaker-widget").unwrap();
+        assert_eq!(t[1].text, "^g");
+        assert_eq!(t[1].original, "'^g'", "original must keep the single quotes");
     }
 
     #[test]
@@ -100,11 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn render_requotes_tokens_with_whitespace() {
-        let cmd = r#"echo "hi there""#;
-        let rendered = render(&split(cmd).unwrap());
-        // Shell-words may pick single-quote form; accept either as long as it re-parses identically.
-        assert_eq!(split(&rendered).unwrap()[1].text, "hi there");
+    fn render_preserves_original_quoting() {
+        // The whole command must round-trip character-for-character.
+        for cmd in [
+            "bindkey '^g' tweaker-widget",
+            r#"git commit -m "fix: typo""#,
+            "echo '*.rs'",
+            r"echo \$HOME",
+        ] {
+            assert_eq!(render(&split(cmd).unwrap()), cmd, "render did not roundtrip: {cmd}");
+        }
     }
 
     #[test]
@@ -114,9 +211,18 @@ mod tests {
         let (rendered, spans) = render_with_spans(&tokens);
         for (i, (start, len)) in spans.iter().enumerate() {
             let slice: String = rendered.chars().skip(*start).take(*len).collect();
-            // The slice at each span, once reparsed on its own, yields the original token text.
+            // Each span in the rendered string re-parses to the original token text.
             assert_eq!(split(&slice).unwrap()[0].text, tokens[i].text, "span {i}");
         }
+    }
+
+    #[test]
+    fn edited_token_gets_requoted_for_render() {
+        // After an edit, original is recomputed. A token with whitespace must be quoted.
+        let text = "hi there".to_string();
+        let original = quote_for_render(&text);
+        let reparsed = split(&original).unwrap();
+        assert_eq!(reparsed[0].text, "hi there");
     }
 
     #[test]
