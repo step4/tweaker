@@ -402,7 +402,7 @@ fn build_editing_view(
     ]);
 
     let hints = Line::from(Span::styled(
-        "↵ commit  ⎋ cancel  ^U clear  ^Q quote",
+        "↵ commit  ⎋ cancel  ^U clear  ^S quote",
         Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
     ));
 
@@ -462,7 +462,7 @@ fn status_line(state: &State) -> Line<'static> {
             Span::styled(" commit  ", Style::new().fg(SUBTLE)),
             Span::styled("Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel  ", Style::new().fg(SUBTLE)),
-            Span::styled("^Q", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled("^S", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" toggle quote  ", Style::new().fg(SUBTLE)),
             Span::styled("^U", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" clear", Style::new().fg(SUBTLE)),
