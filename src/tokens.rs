@@ -130,9 +130,27 @@ pub fn render_with_spans(tokens: &[Token]) -> (String, Vec<(usize, usize)>) {
 }
 
 /// Quote `text` for re-insertion as a new token (e.g. after an edit).
-/// Uses shell_words::quote, which is correct for POSIX shells.
 pub fn quote_for_render(text: &str) -> String {
-    shell_words::quote(text).into_owned()
+    posix_quote(text)
+}
+
+/// Minimal POSIX single-quote logic — equivalent to the removed shell-words::quote.
+fn posix_quote(text: &str) -> String {
+    if text.is_empty() {
+        return "''".to_string();
+    }
+    let safe = text.bytes().all(|b| {
+        matches!(b,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'
+            | b'-' | b'_' | b'.' | b'/' | b':' | b'@'
+            | b'+' | b',' | b'%' | b'^' | b'=' | b'~'
+        )
+    });
+    if safe {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +184,7 @@ impl QuoteStyle {
     /// Produce the shell form for `text` under this quoting style.
     pub fn apply(self, text: &str) -> String {
         match self {
-            Self::None => shell_words::quote(text).into_owned(),
+            Self::None => posix_quote(text),
             Self::Single => {
                 // ' can't appear inside '...'; escape via closing-quote trick.
                 let escaped = text.replace('\'', "'\\''");
