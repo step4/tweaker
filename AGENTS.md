@@ -14,19 +14,20 @@ Guidance for AI coding agents working in this repo.
 
 ## Module map
 
-| File | Responsibility |
-|------|---------------|
-| `src/main.rs` | CLI entry (`clap`), `init` subcommand (shell snippets), `spawn_in_shell` (cross-platform execution) |
-| `src/history.rs` | Load + dedupe shell history; detect history file; strip zsh extended-history prefix |
-| `src/tokens.rs` | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `needs_quote` |
-| `src/state.rs` | Pure state machine: `State`, `Mode`, `Action`, `Outcome`, undo/redo stacks |
-| `src/tui.rs` | Key → `Action` mapping; `ratatui` rendering for picker and tweak screens |
+| File             | Responsibility                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------- |
+| `src/main.rs`    | CLI entry (`clap`), `init` subcommand (shell snippets), `spawn_in_shell` (cross-platform execution) |
+| `src/history.rs` | Load + dedupe shell history; detect history file; strip zsh extended-history prefix                 |
+| `src/tokens.rs`  | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `needs_quote`                 |
+| `src/state.rs`   | Pure state machine: `State`, `Mode`, `Action`, `Outcome`, undo/redo stacks                          |
+| `src/tui.rs`     | Key → `Action` mapping; `ratatui` rendering for picker and tweak screens                            |
 
 ---
 
 ## Architecture: state machine + thin TUI layer
 
 `state.rs` is IO-free and fully unit-tested. `tui.rs` only:
+
 1. Translates `crossterm::KeyEvent` → `Action` via `key_to_action`.
 2. Calls `state.apply(action)` and matches the returned `Outcome`.
 3. Renders from `State` using `ratatui`.
@@ -79,10 +80,10 @@ Labels run `1–9` then `A–Z` (uppercase). Lowercase letters are **reserved as
 
 Three shells supported. Each snippet is a `const &str` in `main.rs` emitted by `tweaker init <shell>`:
 
-| Shell | Keybind | Mechanism |
-|-------|---------|-----------|
-| zsh | `Ctrl+G` | ZLE widget, `BUFFER=...; zle accept-line` |
-| bash | `Ctrl+G` | `bind -x`, `READLINE_LINE=...` |
+| Shell      | Keybind  | Mechanism                                               |
+| ---------- | -------- | ------------------------------------------------------- |
+| zsh        | `Ctrl+G` | ZLE widget, `BUFFER=...; zle accept-line`               |
+| bash       | `Ctrl+G` | `bind -x`, `READLINE_LINE=...`                          |
 | PowerShell | `Ctrl+G` | `Set-PSReadLineKeyHandler`, `PSConsoleReadLine::Insert` |
 
 All widgets call `tweaker --print` (stdout = command, TUI on stderr) and push the result into the shell's readline buffer, so the executed command is recorded in history but the `tweaker` invocation is not.
@@ -116,6 +117,8 @@ cargo test
 - New state machine behaviour: add to `state::tests`. Drive it with `Action` sequences and assert on `rendered(&s)` + `s.mode`.
 - **Do not** test rendered ANSI/ratatui output — it changes with every layout tweak.
 - PTY/integration tests: use `expectrl` if truly needed; keep the set tiny and mark `#[ignore]` on CI if flaky.
+
+> Best practice: run `cargo clippy` regularly as part of review/maintenance, and keep `cargo fmt` and `cargo test` in the loop too.
 
 ---
 
