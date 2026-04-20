@@ -55,7 +55,7 @@ tweaker-widget() {
   zle accept-line
 }
 zle -N tweaker-widget
-bindkey '^1' tweaker-widget
+bindkey '^G' tweaker-widget
 "##;
 
 const BASH_INIT: &str = r##"# tweaker bash integration — source via: eval "$(tweaker init bash)"
@@ -66,7 +66,7 @@ __tweaker_widget() {
   READLINE_LINE=$cmd
   READLINE_POINT=${#cmd}
 }
-bind -x '"\C-1": __tweaker_widget'
+bind -x '"\C-g": __tweaker_widget'
 "##;
 
 fn main() -> Result<ExitCode> {
