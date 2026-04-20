@@ -3,7 +3,7 @@ mod tokens;
 mod tui;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use std::process::{Command, ExitCode};
 
 #[derive(Parser)]
@@ -21,12 +21,65 @@ struct Cli {
     history_file: Option<std::path::PathBuf>,
 
     /// Print the tweaked command to stdout instead of executing it.
+    /// Shell widgets use this; direct CLI use does not.
     #[arg(long)]
     print: bool,
+
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
 }
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Print shell integration snippet. Source via: eval "$(tweaker init zsh)"
+    Init {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum Shell {
+    Zsh,
+    Bash,
+}
+
+const ZSH_INIT: &str = r##"# tweaker zsh integration — source via: eval "$(tweaker init zsh)"
+tweaker-widget() {
+  local cmd
+  cmd=$(tweaker --print </dev/tty) || return
+  [[ -z $cmd ]] && { zle reset-prompt; return }
+  BUFFER=$cmd
+  CURSOR=${#BUFFER}
+  zle accept-line
+}
+zle -N tweaker-widget
+bindkey '^[r' tweaker-widget
+"##;
+
+const BASH_INIT: &str = r##"# tweaker bash integration — source via: eval "$(tweaker init bash)"
+__tweaker_widget() {
+  local cmd
+  cmd=$(tweaker --print </dev/tty) || return
+  [[ -z $cmd ]] && return
+  READLINE_LINE=$cmd
+  READLINE_POINT=${#cmd}
+}
+bind -x '"\er": __tweaker_widget'
+"##;
 
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
+
+    if let Some(Cmd::Init { shell }) = cli.cmd {
+        let snippet = match shell {
+            Shell::Zsh => ZSH_INIT,
+            Shell::Bash => BASH_INIT,
+        };
+        print!("{snippet}");
+        return Ok(ExitCode::SUCCESS);
+    }
+
     let entries = history::load(cli.history_file.as_deref(), cli.limit)?;
     if entries.is_empty() {
         anyhow::bail!("no history entries found");
@@ -43,7 +96,6 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Echo what's about to run, then hand the terminal off to the user's shell.
     eprintln!("\x1b[2m$ {out}\x1b[0m");
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let status = Command::new(&shell)
