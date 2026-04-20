@@ -2,30 +2,55 @@ use crate::state::{Action, HintOp, Mode, Outcome, State};
 use crate::tokens;
 use anyhow::Result;
 use crossterm::{
-    cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    execute, queue,
-    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use std::io::{Write, stderr};
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
+};
+use std::io::{Stderr, stderr};
 use std::time::{Duration, Instant};
 
-const DEFAULT_STATUS: &str = "hint edit · a/i add · d delete · u undo · ^R redo · Enter accept · Esc cancel";
+const DEFAULT_STATUS: &str =
+    "hint edit · a/i add · d delete · u undo · ^R redo · Enter accept · Esc cancel";
 const STATUS_TTL: Duration = Duration::from_millis(1800);
 
-struct RawGuard;
-impl RawGuard {
+// Palette — deliberately restrained.
+const BORDER: Color = Color::DarkGray;
+const TITLE: Color = Color::White;
+const ACCENT: Color = Color::Yellow;
+const HIGHLIGHT: Color = Color::Cyan;
+const SUBTLE: Color = Color::Gray;
+
+type Term = Terminal<CrosstermBackend<Stderr>>;
+
+struct TermGuard {
+    terminal: Term,
+}
+
+impl TermGuard {
     fn enter() -> Result<Self> {
-        terminal::enable_raw_mode()?;
-        execute!(stderr(), EnterAlternateScreen, cursor::Hide)?;
-        Ok(Self)
+        enable_raw_mode()?;
+        execute!(stderr(), EnterAlternateScreen)?;
+        let backend = CrosstermBackend::new(stderr());
+        let mut terminal = Terminal::new(backend)?;
+        terminal.hide_cursor()?;
+        terminal.clear()?;
+        Ok(Self { terminal })
     }
 }
-impl Drop for RawGuard {
+
+impl Drop for TermGuard {
     fn drop(&mut self) {
-        let _ = execute!(stderr(), cursor::Show, LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        let _ = self.terminal.show_cursor();
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
     }
 }
 
@@ -40,7 +65,6 @@ fn read_key() -> Result<KeyEvent> {
     }
 }
 
-/// Like read_key, but returns None if `deadline` passes with no key.
 fn read_key_until(deadline: Instant) -> Result<Option<KeyEvent>> {
     loop {
         let now = Instant::now();
@@ -60,35 +84,18 @@ fn read_key_until(deadline: Instant) -> Result<Option<KeyEvent>> {
     }
 }
 
+// ────────────────────────────── picker ──────────────────────────────
+
 pub fn pick_entry(entries: &[String]) -> Result<Option<String>> {
-    let _g = RawGuard::enter()?;
+    let mut guard = TermGuard::enter()?;
     let mut sel: usize = 0;
-    let mut out = stderr();
+    let mut list_state = ListState::default();
+    list_state.select(Some(sel));
+
     loop {
-        let (_, rows) = terminal::size()?;
-        let visible = (rows as usize).saturating_sub(2).max(1);
-        let start = sel.saturating_sub(visible - 1).min(entries.len().saturating_sub(visible));
-        queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-        queue!(
-            out,
-            SetAttribute(Attribute::Bold),
-            Print("pick a command  (↑/↓ move, Enter select, q/Esc quit)\r\n"),
-            SetAttribute(Attribute::Reset)
-        )?;
-        for (i, cmd) in entries.iter().enumerate().skip(start).take(visible) {
-            if i == sel {
-                queue!(
-                    out,
-                    SetForegroundColor(Color::Black),
-                    crossterm::style::SetBackgroundColor(Color::White),
-                    Print(format!("{:>3}  {}\r\n", i, truncate(cmd, 200))),
-                    ResetColor
-                )?;
-            } else {
-                queue!(out, Print(format!("{:>3}  {}\r\n", i, truncate(cmd, 200))))?;
-            }
-        }
-        out.flush()?;
+        guard
+            .terminal
+            .draw(|f| draw_picker(f, entries, sel, &mut list_state))?;
 
         let k = read_key()?;
         match k.code {
@@ -100,24 +107,87 @@ pub fn pick_entry(entries: &[String]) -> Result<Option<String>> {
                     sel += 1;
                 }
             }
+            KeyCode::PageUp => sel = sel.saturating_sub(10),
+            KeyCode::PageDown => sel = (sel + 10).min(entries.len().saturating_sub(1)),
+            KeyCode::Home => sel = 0,
+            KeyCode::End => sel = entries.len().saturating_sub(1),
             KeyCode::Enter => return Ok(Some(entries[sel].clone())),
             _ => {}
         }
+        list_state.select(Some(sel));
     }
 }
 
-const CMD_ROW: u16 = 2;
-const CMD_COL: u16 = 2;
+fn draw_picker(f: &mut Frame, entries: &[String], sel: usize, list_state: &mut ListState) {
+    let chunks =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
+
+    let items: Vec<ListItem> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, cmd)| {
+            let is_sel = i == sel;
+            let marker = if is_sel { "▸ " } else { "  " };
+            let text_style = if is_sel {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
+            let idx_style = Style::new().fg(SUBTLE).add_modifier(Modifier::DIM);
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, Style::new().fg(ACCENT)),
+                Span::styled(format!("{:>3}  ", i + 1), idx_style),
+                Span::styled(cmd.clone(), text_style),
+            ]))
+        })
+        .collect();
+
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("tweaker", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(" · history ", Style::new().fg(SUBTLE)),
+    ]);
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(BORDER))
+            .title(title),
+    );
+    f.render_stateful_widget(list, chunks[0], list_state);
+
+    let help = Paragraph::new(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            "↑/↓",
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" navigate  ", Style::new().fg(SUBTLE)),
+        Span::styled(
+            "Enter",
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" select  ", Style::new().fg(SUBTLE)),
+        Span::styled(
+            "Esc",
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" cancel", Style::new().fg(SUBTLE)),
+    ]));
+    f.render_widget(help, chunks[1]);
+}
+
+// ────────────────────────────── tweak ──────────────────────────────
 
 pub fn tweak(cmd: &str) -> Result<Option<String>> {
     let initial = tokens::split(cmd)?;
     let mut state = State::new(initial);
-    let _g = RawGuard::enter()?;
-    let mut out = stderr();
+    let mut guard = TermGuard::enter()?;
     let mut status_expires: Option<Instant> = None;
 
     loop {
-        draw(&mut out, &state)?;
+        guard.terminal.draw(|f| draw_tweak(f, &state))?;
 
         let k = match status_expires {
             Some(deadline) => match read_key_until(deadline)? {
@@ -152,9 +222,10 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
     use KeyCode::*;
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     match (&k.code, mode) {
-        (Esc, _) | (Char('c'), _) if matches!(k.code, Esc) || ctrl => Some(Action::Cancel),
+        (Esc, _) => Some(Action::Cancel),
+        (Char('c'), _) if ctrl => Some(Action::Cancel),
 
-        // Editing mode — character keys go into the buffer.
+        // Editing mode takes character keys for the buffer.
         (Enter, Mode::Editing { .. }) => Some(Action::Commit),
         (Char('u'), Mode::Editing { .. }) if ctrl => Some(Action::ClearLine),
         (Backspace, Mode::Editing { .. }) => Some(Action::Backspace),
@@ -178,143 +249,225 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
     }
 }
 
-fn draw<W: Write>(out: &mut W, state: &State) -> Result<()> {
+fn draw_tweak(f: &mut Frame, state: &State) {
+    let area = f.area();
+    let chunks = Layout::vertical([
+        Constraint::Length(5), // tweak box
+        Constraint::Min(0),    // filler
+        Constraint::Length(1), // status
+    ])
+    .split(area);
+
+    let (mode_label, mode_style) = match &state.mode {
+        Mode::Normal => ("normal", Style::new().fg(SUBTLE)),
+        Mode::AwaitHint(_) => ("pending", Style::new().fg(HIGHLIGHT)),
+        Mode::Editing { .. } => ("editing", Style::new().fg(ACCENT)),
+    };
+
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("tweaker", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(" · ", Style::new().fg(SUBTLE)),
+        Span::styled(mode_label, mode_style.add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(BORDER))
+        .title(title);
+
+    let inner = block.inner(chunks[0]);
+    f.render_widget(block, chunks[0]);
+
+    // Inside the box: [blank, command, hints] with 2-col left padding.
+    let pad = 2u16;
+    let content_x = inner.x + pad;
+    let content_w = inner.width.saturating_sub(pad * 2);
+    let cmd_rect = Rect {
+        x: content_x,
+        y: inner.y + 1,
+        width: content_w,
+        height: 1,
+    };
+    let hint_rect = Rect {
+        x: content_x,
+        y: inner.y + 2,
+        width: content_w,
+        height: 1,
+    };
+
+    let (cmd_line, hint_line, cursor_col) = build_cmd_view(state);
+    f.render_widget(Paragraph::new(cmd_line), cmd_rect);
+    f.render_widget(Paragraph::new(hint_line), hint_rect);
+
+    // Status bar below the box.
+    let status_line = status_line(state);
+    f.render_widget(Paragraph::new(status_line), chunks[2]);
+
+    if let Some(col) = cursor_col {
+        f.set_cursor_position(Position {
+            x: cmd_rect.x + col as u16,
+            y: cmd_rect.y,
+        });
+    }
+}
+
+fn build_cmd_view(state: &State) -> (Line<'static>, Line<'static>, Option<usize>) {
     match &state.mode {
-        Mode::Normal | Mode::AwaitHint(_) => draw_hints(out, state),
         Mode::Editing {
             idx, buf, cursor, ..
-        } => draw_editing(out, state, *idx, buf, *cursor),
+        } => build_editing_view(state, *idx, buf, *cursor),
+        _ => build_hint_view(state),
     }
 }
 
-fn draw_hints<W: Write>(out: &mut W, state: &State) -> Result<()> {
+fn build_hint_view(state: &State) -> (Line<'static>, Line<'static>, Option<usize>) {
     let (rendered, spans) = tokens::render_with_spans(&state.tokens);
-    queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-    queue!(
-        out,
-        SetAttribute(Attribute::Bold),
-        Print("tweak command\r\n"),
-        SetAttribute(Attribute::Reset)
-    )?;
-    queue!(out, cursor::MoveTo(CMD_COL, CMD_ROW), Print(&rendered))?;
+    let cmd = Line::from(Span::styled(
+        rendered,
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
 
+    let mut hint_spans: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
     for (i, (start, _len)) in spans.iter().enumerate() {
         let Some(lbl) = tokens::label(i) else { break };
-        let col = CMD_COL + *start as u16;
-        queue!(
-            out,
-            cursor::MoveTo(col, CMD_ROW + 1),
-            SetForegroundColor(Color::Yellow),
-            SetAttribute(Attribute::Bold),
-            Print(lbl),
-            ResetColor,
-            SetAttribute(Attribute::Reset),
-        )?;
+        if *start > col {
+            hint_spans.push(Span::raw(" ".repeat(start - col)));
+        }
+        hint_spans.push(Span::styled(
+            lbl.to_string(),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ));
+        col = start + 1;
     }
 
-    write_status(out, &status_text(state))?;
-    out.flush()?;
-    Ok(())
+    (cmd, Line::from(hint_spans), None)
 }
 
-fn draw_editing<W: Write>(
-    out: &mut W,
+fn build_editing_view(
     state: &State,
     idx: usize,
     buf: &[char],
-    cursor_pos: usize,
-) -> Result<()> {
-    // Render with the edited token shown as the buffer contents (unquoted,
-    // so the user sees exactly what they're typing).
-    let mut line = String::new();
-    let mut tok_start = 0usize;
-    let mut tok_len = 0usize;
+    cursor: usize,
+) -> (Line<'static>, Line<'static>, Option<usize>) {
+    let mut before = String::new();
+    let mut after = String::new();
+    let token_text: String = buf.iter().collect();
+    let mut token_col = 0usize;
+    let mut past_edited = false;
+
     for (i, t) in state.tokens.iter().enumerate() {
-        if i > 0 {
-            line.push(' ');
-        }
+        let sep = if i > 0 { " " } else { "" };
         if i == idx {
-            tok_start = line.chars().count();
-            let s: String = buf.iter().collect();
-            tok_len = s.chars().count();
-            line.push_str(&s);
+            before.push_str(sep);
+            token_col = before.chars().count();
+            past_edited = true;
+            continue;
+        }
+        let rendered = if t.quoted || t.text.is_empty() {
+            shell_words::quote(&t.text).into_owned()
         } else {
-            let r = if t.quoted || t.text.is_empty() {
-                shell_words::quote(&t.text).into_owned()
-            } else {
-                t.text.clone()
+            t.text.clone()
+        };
+        if past_edited {
+            after.push_str(sep);
+            after.push_str(&rendered);
+        } else {
+            before.push_str(sep);
+            before.push_str(&rendered);
+        }
+    }
+
+    let cmd = Line::from(vec![
+        Span::styled(before, Style::new().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            token_text,
+            Style::new()
+                .fg(ACCENT)
+                .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
+        ),
+        Span::styled(after, Style::new().add_modifier(Modifier::BOLD)),
+    ]);
+
+    let hints = Line::from(Span::styled(
+        "↵ commit  ⎋ cancel  ^U clear",
+        Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
+    ));
+
+    (cmd, hints, Some(token_col + cursor))
+}
+
+fn status_line(state: &State) -> Line<'static> {
+    match (&state.status, &state.mode) {
+        (_, Mode::AwaitHint(op)) => {
+            let op_char = match op {
+                HintOp::Delete => "d",
+                HintOp::InsertBefore => "i",
+                HintOp::InsertAfter => "a",
             };
-            line.push_str(&r);
+            let word = match op {
+                HintOp::Delete => "delete",
+                HintOp::InsertBefore => "insert before",
+                HintOp::InsertAfter => "insert after",
+            };
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    "› ",
+                    Style::new().fg(HIGHLIGHT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    op_char.to_string(),
+                    Style::new().fg(HIGHLIGHT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" — press a hint to {word}  "),
+                    Style::new().fg(SUBTLE),
+                ),
+                Span::styled(
+                    "Esc",
+                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" cancel", Style::new().fg(SUBTLE)),
+            ])
         }
-    }
-
-    queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-    queue!(
-        out,
-        SetAttribute(Attribute::Bold),
-        Print("tweak command\r\n"),
-        SetAttribute(Attribute::Reset)
-    )?;
-    queue!(out, cursor::MoveTo(CMD_COL, CMD_ROW))?;
-    let before: String = line.chars().take(tok_start).collect();
-    let tok: String = line.chars().skip(tok_start).take(tok_len).collect();
-    let after: String = line.chars().skip(tok_start + tok_len).collect();
-    queue!(
-        out,
-        Print(before),
-        SetAttribute(Attribute::Underlined),
-        SetForegroundColor(Color::Yellow),
-        Print(&tok),
-        ResetColor,
-        SetAttribute(Attribute::Reset),
-        Print(after),
-    )?;
-
-    write_status(out, &status_text(state))?;
-
-    let cursor_col = CMD_COL + (tok_start + cursor_pos) as u16;
-    queue!(out, cursor::MoveTo(cursor_col, CMD_ROW), cursor::Show)?;
-    out.flush()?;
-    Ok(())
-}
-
-fn status_text(state: &State) -> String {
-    if let Some(s) = &state.status {
-        return s.clone();
-    }
-    match &state.mode {
-        Mode::Normal => DEFAULT_STATUS.into(),
-        Mode::AwaitHint(HintOp::Delete) => "d — press a hint to delete (Esc to cancel)".into(),
-        Mode::AwaitHint(HintOp::InsertBefore) => {
-            "i — press a hint to insert before (Esc to cancel)".into()
-        }
-        Mode::AwaitHint(HintOp::InsertAfter) => {
-            "a — press a hint to insert after (Esc to cancel)".into()
-        }
-        Mode::Editing { .. } => "editing · Enter commit · Esc cancel · Ctrl-U clear".into(),
+        (_, Mode::Editing { .. }) => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "✎ editing  ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Enter",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" commit  ", Style::new().fg(SUBTLE)),
+            Span::styled(
+                "Esc",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" cancel  ", Style::new().fg(SUBTLE)),
+            Span::styled(
+                "^U",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" clear", Style::new().fg(SUBTLE)),
+        ]),
+        (Some(msg), Mode::Normal) => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "✓ ",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(msg.clone(), Style::new().fg(ACCENT)),
+        ]),
+        (None, Mode::Normal) => Line::from(Span::styled(
+            format!(" {DEFAULT_STATUS}"),
+            Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
+        )),
     }
 }
 
-fn write_status<W: Write>(out: &mut W, text: &str) -> Result<()> {
-    let (_, rows) = terminal::size()?;
-    queue!(
-        out,
-        cursor::Hide,
-        cursor::MoveTo(0, rows.saturating_sub(1)),
-        Clear(ClearType::CurrentLine),
-        SetAttribute(Attribute::Dim),
-        Print(text),
-        SetAttribute(Attribute::Reset),
-    )?;
-    Ok(())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
-        t.push('…');
-        t
-    }
-}
