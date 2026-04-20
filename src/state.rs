@@ -40,6 +40,8 @@ pub enum Action {
     ClearLine,
     Commit,
     Cancel,
+    Undo,
+    Redo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,8 @@ pub struct State {
     pub tokens: Vec<Token>,
     pub mode: Mode,
     pub status: Option<String>,
+    undo: Vec<Vec<Token>>,
+    redo: Vec<Vec<Token>>,
 }
 
 impl State {
@@ -62,10 +66,21 @@ impl State {
             tokens,
             mode: Mode::Normal,
             status: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         }
     }
 
     pub fn apply(&mut self, action: Action) -> Outcome {
+        // Undo/Redo short-circuit — they only operate in Normal mode and
+        // bypass the snapshot machinery.
+        match action {
+            Action::Undo => return self.undo(),
+            Action::Redo => return self.redo(),
+            _ => {}
+        }
+
+        let snapshot = self.tokens.clone();
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         let (new_mode, outcome) = match mode {
             Mode::Normal => self.from_normal(action),
@@ -78,7 +93,50 @@ impl State {
             } => self.from_editing(idx, buf, cursor, inserted, action),
         };
         self.mode = new_mode;
+
+        // Any action that actually mutated tokens becomes an undo checkpoint.
+        // Intermediate keystrokes inside Mode::Editing don't change self.tokens
+        // (the buffer is mode-local), so only Commit / Delete / insert-removal
+        // register as undoable events — which matches user intuition.
+        if self.tokens != snapshot {
+            self.undo.push(snapshot);
+            self.redo.clear();
+        }
         outcome
+    }
+
+    fn undo(&mut self) -> Outcome {
+        if !matches!(self.mode, Mode::Normal) {
+            return Outcome::Continue;
+        }
+        match self.undo.pop() {
+            Some(prev) => {
+                let current = std::mem::replace(&mut self.tokens, prev);
+                self.redo.push(current);
+                self.status = Some("undone".into());
+            }
+            None => {
+                self.status = Some("nothing to undo".into());
+            }
+        }
+        Outcome::Continue
+    }
+
+    fn redo(&mut self) -> Outcome {
+        if !matches!(self.mode, Mode::Normal) {
+            return Outcome::Continue;
+        }
+        match self.redo.pop() {
+            Some(next) => {
+                let current = std::mem::replace(&mut self.tokens, next);
+                self.undo.push(current);
+                self.status = Some("redone".into());
+            }
+            None => {
+                self.status = Some("nothing to redo".into());
+            }
+        }
+        Outcome::Continue
     }
 
     fn from_normal(&mut self, action: Action) -> (Mode, Outcome) {
@@ -224,7 +282,9 @@ impl State {
                 (keep(buf, c), Outcome::Continue)
             }
             Action::ClearLine => (keep(Vec::new(), 0), Outcome::Continue),
-            Action::Hint(_) | Action::Prefix(_) => (keep(buf, cursor), Outcome::Continue),
+            Action::Hint(_) | Action::Prefix(_) | Action::Undo | Action::Redo => {
+                (keep(buf, cursor), Outcome::Continue)
+            }
         }
     }
 }
@@ -378,6 +438,73 @@ mod tests {
         s.apply(Action::Cancel);
         assert_eq!(s.mode, Mode::Normal);
         assert_eq!(rendered(&s), "ls");
+    }
+
+    #[test]
+    fn undo_reverts_delete() {
+        let mut s = state("ls -la /tmp");
+        s.apply(Action::Prefix(HintOp::Delete));
+        s.apply(Action::Hint('2'));
+        assert_eq!(rendered(&s), "ls /tmp");
+        s.apply(Action::Undo);
+        assert_eq!(rendered(&s), "ls -la /tmp");
+        assert_eq!(s.status.as_deref(), Some("undone"));
+    }
+
+    #[test]
+    fn redo_reapplies_undone_change() {
+        let mut s = state("ls -la /tmp");
+        s.apply(Action::Prefix(HintOp::Delete));
+        s.apply(Action::Hint('2'));
+        s.apply(Action::Undo);
+        s.apply(Action::Redo);
+        assert_eq!(rendered(&s), "ls /tmp");
+    }
+
+    #[test]
+    fn new_mutation_after_undo_clears_redo() {
+        let mut s = state("ls -la /tmp");
+        s.apply(Action::Prefix(HintOp::Delete));
+        s.apply(Action::Hint('2')); // delete -la
+        s.apply(Action::Undo); // back to "ls -la /tmp"
+        // Now do a different mutation.
+        s.apply(Action::Prefix(HintOp::Delete));
+        s.apply(Action::Hint('3')); // delete /tmp
+        assert_eq!(rendered(&s), "ls -la");
+        // Redo of the old branch must be gone.
+        s.apply(Action::Redo);
+        assert_eq!(s.status.as_deref(), Some("nothing to redo"));
+        assert_eq!(rendered(&s), "ls -la");
+    }
+
+    #[test]
+    fn undo_with_nothing_reports_status() {
+        let mut s = state("ls");
+        s.apply(Action::Undo);
+        assert_eq!(s.status.as_deref(), Some("nothing to undo"));
+        assert_eq!(rendered(&s), "ls");
+    }
+
+    #[test]
+    fn edit_commit_is_one_undo_step() {
+        let mut s = state("echo hi");
+        s.apply(Action::Hint('2'));
+        s.apply(Action::ClearLine);
+        run(&mut s, "bye".chars().map(Action::Char));
+        s.apply(Action::Commit);
+        assert_eq!(rendered(&s), "echo bye");
+        // A single undo should restore the pre-edit text — intermediate char
+        // keystrokes must not each be their own undo step.
+        s.apply(Action::Undo);
+        assert_eq!(rendered(&s), "echo hi");
+    }
+
+    #[test]
+    fn undo_ignored_while_editing() {
+        let mut s = state("echo hi");
+        s.apply(Action::Hint('2'));
+        s.apply(Action::Undo); // ignored: still Editing
+        assert!(matches!(s.mode, Mode::Editing { .. }));
     }
 
     #[test]

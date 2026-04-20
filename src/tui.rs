@@ -11,8 +11,7 @@ use crossterm::{
 use std::io::{Write, stderr};
 use std::time::{Duration, Instant};
 
-const DEFAULT_STATUS: &str =
-    "hint edit · a add after · i add before · d delete · Enter accept · Esc cancel";
+const DEFAULT_STATUS: &str = "hint edit · a/i add · d delete · u undo · ^R redo · Enter accept · Esc cancel";
 const STATUS_TTL: Duration = Duration::from_millis(1800);
 
 struct RawGuard;
@@ -168,6 +167,8 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
 
         // Normal / AwaitHint.
         (Enter, _) => Some(Action::Commit),
+        (Char('r'), Mode::Normal) if ctrl => Some(Action::Redo),
+        (Char('u'), Mode::Normal) => Some(Action::Undo),
         (Char('d'), Mode::Normal) => Some(Action::Prefix(HintOp::Delete)),
         (Char('a'), Mode::Normal) => Some(Action::Prefix(HintOp::InsertAfter)),
         (Char('i'), Mode::Normal) => Some(Action::Prefix(HintOp::InsertBefore)),
