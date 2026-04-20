@@ -18,7 +18,7 @@ Guidance for AI coding agents working in this repo.
 | ---------------- | --------------------------------------------------------------------------------------------------- |
 | `src/main.rs`    | CLI entry (`clap`), `init` subcommand (shell snippets), `spawn_in_shell` (cross-platform execution) |
 | `src/history.rs` | Load + dedupe shell history; detect history file; strip zsh extended-history prefix                 |
-| `src/tokens.rs`  | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `needs_quote`                 |
+| `src/tokens.rs`  | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `QuoteStyle` enum             |
 | `src/state.rs`   | Pure state machine: `State`, `Mode`, `Action`, `Outcome`, undo/redo stacks                          |
 | `src/tui.rs`     | Key → `Action` mapping; `ratatui` rendering for picker and tweak screens                            |
 
@@ -50,9 +50,10 @@ AwaitHint(op)
   ├── Hint(ch) [valid idx] → Editing (insert ops) or Normal (delete)
   └── Cancel / invalid    → Normal
 
-Editing { idx, buf, cursor, inserted }
+Editing { idx, buf, cursor, inserted, quote_style }
   ├── Char / cursor keys  → Editing (buf mutated)
-  ├── Commit              → Normal (tokens[idx].text = buf, re-quoted)
+  ├── ToggleQuote         → Editing (quote_style cycled: None → Single → Double → None)
+  ├── Commit              → Normal (tokens[idx].text = buf, re-quoted via quote_style.apply)
   └── Cancel              → Normal (buf discarded; token removed if inserted=true)
 ```
 
@@ -70,9 +71,9 @@ Labels run `1–9` then `A–Z` (uppercase). Lowercase letters are **reserved as
 
 ## Tokens and quoting
 
-`tokens::split` uses `shell-words::split`, which strips quoting. On `render`, tokens flagged `quoted = true` (or containing shell metacharacters) are re-quoted via `shell_words::quote`. **Never simplify `render` into a plain `join(" ")` — it silently corrupts commands with spaces or special characters.**
+`tokens::split` is a custom POSIX tokeniser (no external shell-words dependency). It preserves each token's `original` source form (including quotes) alongside its logical `text` value, so `render` can reconstruct the command character-for-character without losing quoting.
 
-`needs_quote(s)` is the canonical check. It lives in `tokens.rs` and is used by both `state.rs` (on commit) and `tui.rs` (for display).
+`QuoteStyle` (`None` / `Single` / `Double`) controls how a token is re-serialised after an edit. The user cycles it with `Ctrl+S` during editing; `state.rs` calls `quote_style.apply(&text)` on commit. `QuoteStyle::None` falls back to minimal POSIX single-quoting (safe chars are left bare). **Never simplify `render` into a plain `join(" ")` — it silently corrupts commands with spaces or special characters.**
 
 ---
 
@@ -105,7 +106,7 @@ All widgets call `tweaker --print` (stdout = command, TUI on stderr) and push th
 cargo test
 ```
 
-33 tests, no TTY required. Structure:
+39 tests, no TTY required. Structure:
 
 - `tokens::tests` — split/render roundtrip, quoting, label↔index mapping.
 - `history::tests` — `parse_line` variants, `load` dedup + limit (uses `tempfile`).
@@ -118,7 +119,37 @@ cargo test
 - **Do not** test rendered ANSI/ratatui output — it changes with every layout tweak.
 - PTY/integration tests: use `expectrl` if truly needed; keep the set tiny and mark `#[ignore]` on CI if flaky.
 
-> Best practice: run `cargo clippy` regularly as part of review/maintenance, and keep `cargo fmt` and `cargo test` in the loop too.
+---
+
+## Keeping docs in sync
+
+When you add or change a user-facing feature (new key binding, new CLI flag, new mode behaviour), update **README.md** in the same commit. Specifically:
+
+- New key in edit mode → add a row to the "Editing a token" table.
+- New key in normal mode → add a row to the "Normal mode keys" table.
+- New CLI flag → update the CLI reference block.
+- Changed history detection order → update the "History file detection" list.
+
+Also update the module map, mode diagram, or test count in this file if the architecture changed.
+
+---
+
+## Before committing
+
+**Always run all three before marking work done:**
+
+```sh
+cargo fmt
+cargo clippy   # must be warning-free
+cargo test
+```
+
+Clippy pitfalls that have bitten this codebase before:
+
+- Methods named `from_*` must take no `self` (clippy::wrong_self_convention). Use `handle_*` or `process_*` for `&mut self` dispatch methods.
+- Nested `if let` / `if let … && !x` blocks should be collapsed with `&&` let-chains.
+- `loop { let Some(x) = … else { break }; … }` should be `while let Some(x) = … { … }`.
+- `pub fn` items only used in `#[cfg(test)]` still trigger `dead_code`. Either remove the wrapper or inline the call in the test.
 
 ---
 
@@ -127,7 +158,7 @@ cargo test
 - `anyhow::Result` everywhere; use `?` freely. No custom error types.
 - No `println!` except in `main` after the TUI exits (the final command echo). Everything interactive uses `stderr`.
 - `TermGuard` in `tui.rs` is RAII: raw mode and alternate screen are always restored on drop, even on panic. Any new screen must be inside a `TermGuard` scope.
-- Keep deps justified. Current set: `clap`, `crossterm`, `ratatui`, `shell-words`, `anyhow`, `dirs`. Dev: `insta`, `tempfile`.
+- Keep deps justified. Current set: `clap`, `crossterm`, `ratatui`, `anyhow`, `dirs`. Dev: `insta`, `tempfile`.
 
 ---
 

@@ -140,6 +140,7 @@ The token underlines and a real cursor appears at its position. Surrounding toke
 | `Home` / `End`      | Jump to start / end         |
 | `Backspace` / `Del` | Delete character            |
 | `Ctrl+U`            | Clear the token             |
+| `Ctrl+S`            | Cycle quote style (none → `'` → `"`) |
 | `Enter`             | Commit edit                 |
 | `Esc`               | Cancel edit — token reverts |
 
