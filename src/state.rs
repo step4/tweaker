@@ -1,7 +1,7 @@
 //! Pure state machine for the tweak screen. No IO, no terminal — the TUI
 //! layer translates key events into `Action`s and renders from `State`.
 
-use crate::tokens::{self, Token};
+use crate::tokens::{self, QuoteStyle, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintOp {
@@ -21,6 +21,7 @@ pub enum Mode {
         /// True if the token was freshly inserted for this edit session;
         /// on cancel or empty-commit we remove it instead of keeping empty text.
         inserted: bool,
+        quote_style: QuoteStyle,
     },
 }
 
@@ -42,6 +43,7 @@ pub enum Action {
     Cancel,
     Undo,
     Redo,
+    ToggleQuote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +92,8 @@ impl State {
                 buf,
                 cursor,
                 inserted,
-            } => self.from_editing(idx, buf, cursor, inserted, action),
+                quote_style,
+            } => self.from_editing(idx, buf, cursor, inserted, quote_style, action),
         };
         self.mode = new_mode;
 
@@ -148,12 +151,14 @@ impl State {
                 Some(idx) => {
                     let buf: Vec<char> = self.tokens[idx].text.chars().collect();
                     let cursor = buf.len();
+                    let quote_style = QuoteStyle::from_original(&self.tokens[idx].original);
                     (
                         Mode::Editing {
                             idx,
                             buf,
                             cursor,
                             inserted: false,
+                            quote_style,
                         },
                         Outcome::Continue,
                     )
@@ -199,6 +204,7 @@ impl State {
                                 buf: Vec::new(),
                                 cursor: 0,
                                 inserted: true,
+                                quote_style: QuoteStyle::None,
                             },
                             Outcome::Continue,
                         )
@@ -220,13 +226,22 @@ impl State {
         mut buf: Vec<char>,
         mut cursor: usize,
         inserted: bool,
+        quote_style: QuoteStyle,
         action: Action,
     ) -> (Mode, Outcome) {
-        let keep = |buf, cursor| Mode::Editing {
+        let keep = |buf: Vec<char>, cursor: usize| Mode::Editing {
             idx,
             buf,
             cursor,
             inserted,
+            quote_style,
+        };
+        let keep_qs = |buf: Vec<char>, cursor: usize, qs: QuoteStyle| Mode::Editing {
+            idx,
+            buf,
+            cursor,
+            inserted,
+            quote_style: qs,
         };
         match action {
             Action::Cancel => {
@@ -243,10 +258,13 @@ impl State {
                     self.status = Some("insert cancelled".into());
                 } else {
                     self.tokens[idx].text = text;
-                    self.tokens[idx].original = tokens::quote_for_render(&self.tokens[idx].text);
+                    self.tokens[idx].original = quote_style.apply(&self.tokens[idx].text);
                     self.status = Some(format!("edited token {}", idx + 1));
                 }
                 (Mode::Normal, Outcome::Continue)
+            }
+            Action::ToggleQuote => {
+                (keep_qs(buf, cursor, quote_style.cycle()), Outcome::Continue)
             }
             Action::Char(c) => {
                 buf.insert(cursor, c);
@@ -505,6 +523,51 @@ mod tests {
         s.apply(Action::Hint('2'));
         s.apply(Action::Undo); // ignored: still Editing
         assert!(matches!(s.mode, Mode::Editing { .. }));
+    }
+
+    #[test]
+    fn edit_preserves_single_quote_style() {
+        let mut s = state("bindkey '^g' tweaker-widget");
+        s.apply(Action::Hint('2')); // enters editing with QuoteStyle::Single
+        s.apply(Action::Char('d'));
+        s.apply(Action::Char('d'));
+        s.apply(Action::Commit);
+        assert_eq!(tokens::render(&s.tokens), "bindkey '^gdd' tweaker-widget");
+    }
+
+    #[test]
+    fn toggle_quote_single_to_double() {
+        let mut s = state("echo foo");
+        s.apply(Action::Hint('2')); // QuoteStyle::None
+        s.apply(Action::ToggleQuote); // → Single
+        s.apply(Action::ToggleQuote); // → Double
+        s.apply(Action::Commit);
+        assert_eq!(tokens::render(&s.tokens), r#"echo "foo""#);
+    }
+
+    #[test]
+    fn toggle_quote_wraps_on_commit() {
+        let mut s = state("echo foo");
+        s.apply(Action::Hint('2'));
+        s.apply(Action::ToggleQuote); // → Single
+        s.apply(Action::Commit);
+        assert_eq!(tokens::render(&s.tokens), "echo 'foo'");
+        // Re-parse: logical value unchanged.
+        let reparsed = tokens::split(&tokens::render(&s.tokens)).unwrap();
+        assert_eq!(reparsed[1].text, "foo");
+        assert_eq!(reparsed[1].original, "'foo'");
+    }
+
+    #[test]
+    fn toggle_quote_cycle_back_to_none() {
+        let mut s = state("echo foo");
+        s.apply(Action::Hint('2'));
+        s.apply(Action::ToggleQuote); // → Single
+        s.apply(Action::ToggleQuote); // → Double
+        s.apply(Action::ToggleQuote); // → None
+        s.apply(Action::Commit);
+        // QuoteStyle::None uses shell_words::quote which leaves "foo" bare.
+        assert_eq!(tokens::render(&s.tokens), "echo foo");
     }
 
     #[test]

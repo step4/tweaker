@@ -1,4 +1,5 @@
 use crate::state::{Action, HintOp, Mode, Outcome, State};
+use crate::tokens::QuoteStyle;
 use crate::tokens;
 use anyhow::Result;
 use crossterm::{
@@ -228,6 +229,7 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
         // Editing mode takes character keys for the buffer.
         (Enter, Mode::Editing { .. }) => Some(Action::Commit),
         (Char('u'), Mode::Editing { .. }) if ctrl => Some(Action::ClearLine),
+        (Char('q'), Mode::Editing { .. }) if ctrl => Some(Action::ToggleQuote),
         (Backspace, Mode::Editing { .. }) => Some(Action::Backspace),
         (Delete, Mode::Editing { .. }) => Some(Action::Delete),
         (Left, Mode::Editing { .. }) => Some(Action::Left),
@@ -317,8 +319,12 @@ fn draw_tweak(f: &mut Frame, state: &State) {
 fn build_cmd_view(state: &State) -> (Line<'static>, Line<'static>, Option<usize>) {
     match &state.mode {
         Mode::Editing {
-            idx, buf, cursor, ..
-        } => build_editing_view(state, *idx, buf, *cursor),
+            idx,
+            buf,
+            cursor,
+            quote_style,
+            ..
+        } => build_editing_view(state, *idx, buf, *cursor, *quote_style),
         _ => build_hint_view(state),
     }
 }
@@ -352,10 +358,11 @@ fn build_editing_view(
     idx: usize,
     buf: &[char],
     cursor: usize,
+    quote_style: QuoteStyle,
 ) -> (Line<'static>, Line<'static>, Option<usize>) {
     let mut before = String::new();
     let mut after = String::new();
-    let token_text: String = buf.iter().collect();
+    let raw: String = buf.iter().collect();
     let mut token_col = 0usize;
     let mut past_edited = false;
 
@@ -367,20 +374,27 @@ fn build_editing_view(
             past_edited = true;
             continue;
         }
-        let rendered = t.original.clone();
         if past_edited {
             after.push_str(sep);
-            after.push_str(&rendered);
+            after.push_str(&t.original);
         } else {
             before.push_str(sep);
-            before.push_str(&rendered);
+            before.push_str(&t.original);
         }
     }
+
+    // Show the token with the current quote wrapping (no escaping — that happens on commit).
+    let (open, close) = match quote_style {
+        QuoteStyle::None => ("", ""),
+        QuoteStyle::Single => ("'", "'"),
+        QuoteStyle::Double => ("\"", "\""),
+    };
+    let token_display = format!("{open}{raw}{close}");
 
     let cmd = Line::from(vec![
         Span::styled(before, Style::new().add_modifier(Modifier::BOLD)),
         Span::styled(
-            token_text,
+            token_display,
             Style::new()
                 .fg(ACCENT)
                 .add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
@@ -389,11 +403,12 @@ fn build_editing_view(
     ]);
 
     let hints = Line::from(Span::styled(
-        "↵ commit  ⎋ cancel  ^U clear",
+        "↵ commit  ⎋ cancel  ^U clear  ^Q quote",
         Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
     ));
 
-    (cmd, hints, Some(token_col + cursor))
+    // Cursor offset: token column + optional opening quote + position in buffer.
+    (cmd, hints, Some(token_col + quote_style.prefix_len() + cursor))
 }
 
 fn status_line(state: &State) -> Line<'static> {
@@ -430,26 +445,20 @@ fn status_line(state: &State) -> Line<'static> {
                 Span::styled(" cancel", Style::new().fg(SUBTLE)),
             ])
         }
-        (_, Mode::Editing { .. }) => Line::from(vec![
+        (_, Mode::Editing { quote_style, .. }) => Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 "✎ editing  ",
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "Enter",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(quote_style.label(), Style::new().fg(HIGHLIGHT).add_modifier(Modifier::BOLD)),
+            Span::styled("  Enter", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" commit  ", Style::new().fg(SUBTLE)),
-            Span::styled(
-                "Esc",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel  ", Style::new().fg(SUBTLE)),
-            Span::styled(
-                "^U",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("^Q", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" toggle quote  ", Style::new().fg(SUBTLE)),
+            Span::styled("^U", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" clear", Style::new().fg(SUBTLE)),
         ]),
         (Some(msg), Mode::Normal) => Line::from(vec![

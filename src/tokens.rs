@@ -135,6 +135,71 @@ pub fn quote_for_render(text: &str) -> String {
     shell_words::quote(text).into_owned()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteStyle {
+    None,
+    Single,
+    Double,
+}
+
+impl QuoteStyle {
+    /// Detect the quoting style from a token's original form.
+    /// Mixed forms (e.g. `foo'bar'`) are treated as None.
+    pub fn from_original(original: &str) -> Self {
+        if original.starts_with('\'') {
+            Self::Single
+        } else if original.starts_with('"') {
+            Self::Double
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::None => Self::Single,
+            Self::Single => Self::Double,
+            Self::Double => Self::None,
+        }
+    }
+
+    /// Produce the shell form for `text` under this quoting style.
+    pub fn apply(self, text: &str) -> String {
+        match self {
+            Self::None => shell_words::quote(text).into_owned(),
+            Self::Single => {
+                // ' can't appear inside '...'; escape via closing-quote trick.
+                let escaped = text.replace('\'', "'\\''");
+                format!("'{escaped}'")
+            }
+            Self::Double => {
+                let escaped = text
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('$', "\\$")
+                    .replace('`', "\\`");
+                format!("\"{escaped}\"")
+            }
+        }
+    }
+
+    /// Number of leading quote characters (for cursor offset in edit display).
+    pub fn prefix_len(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Single | Self::Double => 1,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "no quote",
+            Self::Single => "single '",
+            Self::Double => "double \"",
+        }
+    }
+}
+
 /// Selector label for each token: 1..9, then A..Z. Uppercase is deliberate —
 /// lowercase letters are reserved as command prefixes (d, a, …).
 pub fn label(i: usize) -> Option<char> {
