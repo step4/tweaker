@@ -1,4 +1,5 @@
 use crate::state::{Action, HintOp, Mode, Outcome, State};
+use crate::suggestions::SuggestionKind;
 use crate::tokens;
 use crate::tokens::QuoteStyle;
 use anyhow::Result;
@@ -180,6 +181,8 @@ fn draw_picker(f: &mut Frame, entries: &[String], sel: usize, list_state: &mut L
 pub fn tweak(cmd: &str) -> Result<Option<String>> {
     let initial = tokens::split(cmd)?;
     let mut state = State::new(initial);
+    let cmd_name = state.tokens.first().map(|t| t.text.clone()).unwrap_or_default();
+    state.suggestions = crate::suggestions::load(&cmd_name);
     let mut guard = TermGuard::enter()?;
     let mut status_expires: Option<Instant> = None;
 
@@ -234,7 +237,18 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
         (End, Mode::Editing { .. }) => Some(Action::End),
         (Char(c), Mode::Editing { .. }) if !ctrl => Some(Action::Char(*c)),
 
+        // BrowsingSuggestions mode.
+        (Tab, Mode::BrowsingSuggestions { .. }) => Some(Action::FocusSuggestions),
+        (Up, Mode::BrowsingSuggestions { .. }) | (Char('k'), Mode::BrowsingSuggestions { .. }) => {
+            Some(Action::SuggestionUp)
+        }
+        (Down, Mode::BrowsingSuggestions { .. }) | (Char('j'), Mode::BrowsingSuggestions { .. }) => {
+            Some(Action::SuggestionDown)
+        }
+        (Enter, Mode::BrowsingSuggestions { .. }) => Some(Action::ApplySuggestion),
+
         // Normal / AwaitHint.
+        (Tab, Mode::Normal) => Some(Action::FocusSuggestions),
         (Enter, _) => Some(Action::Commit),
         (Char('r'), Mode::Normal) if ctrl => Some(Action::Redo),
         (Char('u'), Mode::Normal) => Some(Action::Undo),
@@ -249,25 +263,46 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
 
 fn draw_tweak(f: &mut Frame, state: &State) {
     let area = f.area();
-    let chunks = Layout::vertical([
-        Constraint::Length(5), // tweak box
-        Constraint::Min(0),    // filler
-        Constraint::Length(1), // status
-    ])
-    .split(area);
 
+    // Outer: content area + 1-row status bar.
+    let vchunks = Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).split(area);
+    let (content_area, status_area) = (vchunks[0], vchunks[1]);
+
+    // Content: tweak column (left) + optional suggestions column (right).
+    let (tweak_col, sugg_col_opt) = if state.suggestions.is_empty() {
+        (content_area, None)
+    } else {
+        let hchunks =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .split(content_area);
+        (hchunks[0], Some(hchunks[1]))
+    };
+
+    // Tweak box: fixed 5-row height at the top of its column.
+    let tweak_vchunks =
+        Layout::vertical([Constraint::Length(5), Constraint::Min(0)]).split(tweak_col);
+    let box_area = tweak_vchunks[0];
+
+    draw_tweak_box(f, state, box_area);
+
+    if let Some(sugg_area) = sugg_col_opt {
+        draw_suggestions(f, state, sugg_area);
+    }
+
+    f.render_widget(Paragraph::new(status_line(state)), status_area);
+}
+
+fn draw_tweak_box(f: &mut Frame, state: &State, area: Rect) {
     let (mode_label, mode_style) = match &state.mode {
         Mode::Normal => ("normal", Style::new().fg(SUBTLE)),
         Mode::AwaitHint(_) => ("pending", Style::new().fg(HIGHLIGHT)),
         Mode::Editing { .. } => ("editing", Style::new().fg(ACCENT)),
+        Mode::BrowsingSuggestions { .. } => ("normal", Style::new().fg(SUBTLE)),
     };
 
     let title = Line::from(vec![
         Span::raw(" "),
-        Span::styled(
-            "tweaker",
-            Style::new().fg(TITLE).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("tweaker", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
         Span::styled(" · ", Style::new().fg(SUBTLE)),
         Span::styled(mode_label, mode_style.add_modifier(Modifier::BOLD)),
         Span::raw(" "),
@@ -279,40 +314,89 @@ fn draw_tweak(f: &mut Frame, state: &State) {
         .border_style(Style::new().fg(BORDER))
         .title(title);
 
-    let inner = block.inner(chunks[0]);
-    f.render_widget(block, chunks[0]);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    // Inside the box: [blank, command, hints] with 2-col left padding.
     let pad = 2u16;
     let content_x = inner.x + pad;
     let content_w = inner.width.saturating_sub(pad * 2);
-    let cmd_rect = Rect {
-        x: content_x,
-        y: inner.y + 1,
-        width: content_w,
-        height: 1,
-    };
-    let hint_rect = Rect {
-        x: content_x,
-        y: inner.y + 2,
-        width: content_w,
-        height: 1,
-    };
+    let cmd_rect = Rect { x: content_x, y: inner.y + 1, width: content_w, height: 1 };
+    let hint_rect = Rect { x: content_x, y: inner.y + 2, width: content_w, height: 1 };
 
     let (cmd_line, hint_line, cursor_col) = build_cmd_view(state);
     f.render_widget(Paragraph::new(cmd_line), cmd_rect);
     f.render_widget(Paragraph::new(hint_line), hint_rect);
 
-    // Status bar below the box.
-    let status_line = status_line(state);
-    f.render_widget(Paragraph::new(status_line), chunks[2]);
-
     if let Some(col) = cursor_col {
-        f.set_cursor_position(Position {
-            x: cmd_rect.x + col as u16,
-            y: cmd_rect.y,
-        });
+        f.set_cursor_position(Position { x: cmd_rect.x + col as u16, y: cmd_rect.y });
     }
+}
+
+fn draw_suggestions(f: &mut Frame, state: &State, area: Rect) {
+    let browsing = matches!(&state.mode, Mode::BrowsingSuggestions { .. });
+    let selected = match &state.mode {
+        Mode::BrowsingSuggestions { selected } => Some(*selected),
+        _ => None,
+    };
+
+    let items: Vec<ListItem> = state
+        .suggestions
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let is_sel = selected == Some(i);
+            let marker = if is_sel { "▸ " } else { "  " };
+            let desc_style = if is_sel {
+                Style::new().fg(SUBTLE)
+            } else {
+                Style::new().fg(SUBTLE).add_modifier(Modifier::DIM)
+            };
+            let ex_style = if is_sel {
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().add_modifier(Modifier::DIM)
+            };
+            let example_text = match s.kind {
+                SuggestionKind::Example => format!("> {}", s.example),
+                SuggestionKind::Flag => s.example.clone(),
+            };
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(s.description.clone(), desc_style),
+                ]),
+                Line::from(vec![
+                    Span::styled(marker, Style::new().fg(ACCENT)),
+                    Span::styled(example_text, ex_style),
+                ]),
+            ])
+        })
+        .collect();
+
+    let cmd_name = state.tokens.first().map(|t| t.text.as_str()).unwrap_or("");
+    let border_style = if browsing {
+        Style::new().fg(HIGHLIGHT)
+    } else {
+        Style::new().fg(BORDER)
+    };
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("suggestions", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(format!(" · {cmd_name} "), Style::new().fg(SUBTLE)),
+    ]);
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .title(title),
+    );
+    let mut list_state = ListState::default();
+    if let Some(sel) = selected {
+        list_state.select(Some(sel));
+    }
+    f.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn build_cmd_view(state: &State) -> (Line<'static>, Line<'static>, Option<usize>) {
@@ -467,14 +551,31 @@ fn status_line(state: &State) -> Line<'static> {
             Span::styled("^U", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" clear", Style::new().fg(SUBTLE)),
         ]),
+        (_, Mode::BrowsingSuggestions { .. }) => Line::from(vec![
+            Span::raw(" "),
+            Span::styled("↑/↓", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" navigate  ", Style::new().fg(SUBTLE)),
+            Span::styled("Enter", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" apply  ", Style::new().fg(SUBTLE)),
+            Span::styled("Tab/Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(" back", Style::new().fg(SUBTLE)),
+        ]),
         (Some(msg), Mode::Normal) => Line::from(vec![
             Span::raw(" "),
             Span::styled("✓ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(msg.clone(), Style::new().fg(ACCENT)),
         ]),
-        (None, Mode::Normal) => Line::from(Span::styled(
-            format!(" {DEFAULT_STATUS}"),
-            Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
-        )),
+        (None, Mode::Normal) => {
+            let base = format!(" {DEFAULT_STATUS}");
+            let tab_hint = if !state.suggestions.is_empty() {
+                "  · Tab suggestions"
+            } else {
+                ""
+            };
+            Line::from(Span::styled(
+                format!("{base}{tab_hint}"),
+                Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
+            ))
+        }
     }
 }

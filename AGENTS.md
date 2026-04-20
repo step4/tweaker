@@ -18,9 +18,10 @@ Guidance for AI coding agents working in this repo.
 | ---------------- | --------------------------------------------------------------------------------------------------- |
 | `src/main.rs`    | CLI entry (`clap`), `init` subcommand (shell snippets), `spawn_in_shell` (cross-platform execution) |
 | `src/history.rs` | Load + dedupe shell history; detect history file; strip zsh extended-history prefix                 |
-| `src/tokens.rs`  | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `QuoteStyle` enum             |
-| `src/state.rs`   | Pure state machine: `State`, `Mode`, `Action`, `Outcome`, undo/redo stacks                          |
-| `src/tui.rs`     | Key → `Action` mapping; `ratatui` rendering for picker and tweak screens                            |
+| `src/tokens.rs`     | `split` / `render` / `render_with_spans`; hint label ↔ index mapping; `QuoteStyle` enum          |
+| `src/state.rs`      | Pure state machine: `State`, `Mode`, `Action`, `Outcome`, undo/redo stacks                        |
+| `src/suggestions.rs`| `load(cmd)` → tldr cache parser + man-page fallback; `Suggestion` / `SuggestionKind` types       |
+| `src/tui.rs`        | Key → `Action` mapping; `ratatui` rendering for picker, tweak, and suggestions panel             |
 
 ---
 
@@ -55,6 +56,12 @@ Editing { idx, buf, cursor, inserted, quote_style }
   ├── ToggleQuote         → Editing (quote_style cycled: None → Single → Double → None)
   ├── Commit              → Normal (tokens[idx].text = buf, re-quoted via quote_style.apply)
   └── Cancel              → Normal (buf discarded; token removed if inserted=true)
+
+BrowsingSuggestions { selected }
+  ├── SuggestionUp / SuggestionDown  → BrowsingSuggestions (selection wraps)
+  ├── ApplySuggestion (Example)      → Normal (tokens replaced by split(example))
+  ├── ApplySuggestion (Flag)         → Normal (flag appended as new token)
+  └── Cancel / FocusSuggestions      → Normal
 ```
 
 ### Undo / redo
@@ -106,11 +113,12 @@ All widgets call `tweaker --print` (stdout = command, TUI on stderr) and push th
 cargo test
 ```
 
-39 tests, no TTY required. Structure:
+55 tests, no TTY required. Structure:
 
 - `tokens::tests` — split/render roundtrip, quoting, label↔index mapping.
 - `history::tests` — `parse_line` variants, `load` dedup + limit (uses `tempfile`).
-- `state::tests` — full state machine: every mode transition, undo/redo, cursor movement, insert/cancel edge cases.
+- `state::tests` — full state machine: every mode transition, undo/redo, cursor movement, insert/cancel edge cases, suggestions browsing.
+- `suggestions::tests` — tldr Markdown parser, man-page backspace stripping and OPTIONS extraction, cache dir resolution.
 
 ### Adding tests
 

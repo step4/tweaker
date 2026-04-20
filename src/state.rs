@@ -1,6 +1,7 @@
 //! Pure state machine for the tweak screen. No IO, no terminal — the TUI
 //! layer translates key events into `Action`s and renders from `State`.
 
+use crate::suggestions::{Suggestion, SuggestionKind};
 use crate::tokens::{self, QuoteStyle, Token};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub enum Mode {
         inserted: bool,
         quote_style: QuoteStyle,
     },
+    BrowsingSuggestions { selected: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,10 @@ pub enum Action {
     Undo,
     Redo,
     ToggleQuote,
+    FocusSuggestions,
+    SuggestionUp,
+    SuggestionDown,
+    ApplySuggestion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +64,8 @@ pub struct State {
     pub tokens: Vec<Token>,
     pub mode: Mode,
     pub status: Option<String>,
+    /// Populated by the caller (tui layer) after construction via `suggestions::load`.
+    pub suggestions: Vec<Suggestion>,
     undo: Vec<Vec<Token>>,
     redo: Vec<Vec<Token>>,
 }
@@ -68,6 +76,7 @@ impl State {
             tokens,
             mode: Mode::Normal,
             status: None,
+            suggestions: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -94,6 +103,7 @@ impl State {
                 inserted,
                 quote_style,
             } => self.handle_editing(idx, buf, cursor, inserted, quote_style, action),
+            Mode::BrowsingSuggestions { selected } => self.handle_browsing(selected, action),
         };
         self.mode = new_mode;
 
@@ -168,7 +178,46 @@ impl State {
                     (Mode::Normal, Outcome::Continue)
                 }
             },
+            Action::FocusSuggestions => {
+                if self.suggestions.is_empty() {
+                    (Mode::Normal, Outcome::Continue)
+                } else {
+                    (Mode::BrowsingSuggestions { selected: 0 }, Outcome::Continue)
+                }
+            }
             _ => (Mode::Normal, Outcome::Continue),
+        }
+    }
+
+    fn handle_browsing(&mut self, selected: usize, action: Action) -> (Mode, Outcome) {
+        let n = self.suggestions.len();
+        match action {
+            Action::Cancel | Action::FocusSuggestions => (Mode::Normal, Outcome::Continue),
+            Action::SuggestionUp => {
+                let next = if selected == 0 { n.saturating_sub(1) } else { selected - 1 };
+                (Mode::BrowsingSuggestions { selected: next }, Outcome::Continue)
+            }
+            Action::SuggestionDown => {
+                let next = if selected + 1 >= n { 0 } else { selected + 1 };
+                (Mode::BrowsingSuggestions { selected: next }, Outcome::Continue)
+            }
+            Action::ApplySuggestion => {
+                let s = &self.suggestions[selected];
+                match s.kind {
+                    SuggestionKind::Example => {
+                        if let Ok(new_tokens) = tokens::split(&s.example.clone()) {
+                            self.tokens = new_tokens;
+                        }
+                    }
+                    SuggestionKind::Flag => {
+                        let flag = s.example.clone();
+                        self.tokens.push(Token { text: flag.clone(), original: flag });
+                    }
+                }
+                self.status = Some("applied".into());
+                (Mode::Normal, Outcome::Continue)
+            }
+            _ => (Mode::BrowsingSuggestions { selected }, Outcome::Continue),
         }
     }
 
@@ -300,9 +349,14 @@ impl State {
                 (keep(buf, c), Outcome::Continue)
             }
             Action::ClearLine => (keep(Vec::new(), 0), Outcome::Continue),
-            Action::Hint(_) | Action::Prefix(_) | Action::Undo | Action::Redo => {
-                (keep(buf, cursor), Outcome::Continue)
-            }
+            Action::Hint(_)
+            | Action::Prefix(_)
+            | Action::Undo
+            | Action::Redo
+            | Action::FocusSuggestions
+            | Action::SuggestionUp
+            | Action::SuggestionDown
+            | Action::ApplySuggestion => (keep(buf, cursor), Outcome::Continue),
         }
     }
 }
@@ -581,5 +635,103 @@ mod tests {
         // into the same logical tokens.
         let reparsed = tokens::split(&tokens::render(&s.tokens)).unwrap();
         assert_eq!(reparsed[1].text, "hi there");
+    }
+
+    // ─── suggestions / browsing ───────────────────────────────────────────────
+
+    fn with_suggestions(cmd: &str, suggestions: Vec<crate::suggestions::Suggestion>) -> State {
+        let mut s = state(cmd);
+        s.suggestions = suggestions;
+        s
+    }
+
+    fn example_suggestion(desc: &str, example: &str) -> crate::suggestions::Suggestion {
+        crate::suggestions::Suggestion {
+            description: desc.to_string(),
+            example: example.to_string(),
+            kind: crate::suggestions::SuggestionKind::Example,
+        }
+    }
+
+    fn flag_suggestion(desc: &str, flag: &str) -> crate::suggestions::Suggestion {
+        crate::suggestions::Suggestion {
+            description: desc.to_string(),
+            example: flag.to_string(),
+            kind: crate::suggestions::SuggestionKind::Flag,
+        }
+    }
+
+    #[test]
+    fn tab_enters_browsing_mode() {
+        let mut s = with_suggestions("git commit", vec![example_suggestion("amend", "git commit --amend")]);
+        s.apply(Action::FocusSuggestions);
+        assert!(matches!(s.mode, Mode::BrowsingSuggestions { selected: 0 }));
+    }
+
+    #[test]
+    fn tab_ignored_when_no_suggestions() {
+        let mut s = state("ls");
+        s.apply(Action::FocusSuggestions);
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn browsing_navigation_wraps() {
+        let suggs = vec![
+            example_suggestion("a", "cmd a"),
+            example_suggestion("b", "cmd b"),
+            example_suggestion("c", "cmd c"),
+        ];
+        let mut s = with_suggestions("cmd", suggs);
+        s.apply(Action::FocusSuggestions);
+        s.apply(Action::SuggestionDown);
+        assert!(matches!(s.mode, Mode::BrowsingSuggestions { selected: 1 }));
+        s.apply(Action::SuggestionDown);
+        s.apply(Action::SuggestionDown); // wraps to 0
+        assert!(matches!(s.mode, Mode::BrowsingSuggestions { selected: 0 }));
+        s.apply(Action::SuggestionUp); // wraps to 2
+        assert!(matches!(s.mode, Mode::BrowsingSuggestions { selected: 2 }));
+    }
+
+    #[test]
+    fn apply_example_suggestion_replaces_tokens() {
+        let mut s = with_suggestions(
+            "git commit",
+            vec![example_suggestion("amend", "git commit --amend")],
+        );
+        s.apply(Action::FocusSuggestions);
+        s.apply(Action::ApplySuggestion);
+        assert_eq!(rendered(&s), "git commit --amend");
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn apply_flag_suggestion_appends_token() {
+        let mut s = with_suggestions("ls", vec![flag_suggestion("all files", "-a")]);
+        s.apply(Action::FocusSuggestions);
+        s.apply(Action::ApplySuggestion);
+        assert_eq!(rendered(&s), "ls -a");
+        assert_eq!(s.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn apply_suggestion_is_undoable() {
+        let mut s = with_suggestions(
+            "git commit",
+            vec![example_suggestion("amend", "git commit --amend")],
+        );
+        s.apply(Action::FocusSuggestions);
+        s.apply(Action::ApplySuggestion);
+        assert_eq!(rendered(&s), "git commit --amend");
+        s.apply(Action::Undo);
+        assert_eq!(rendered(&s), "git commit");
+    }
+
+    #[test]
+    fn cancel_exits_browsing_to_normal() {
+        let mut s = with_suggestions("ls", vec![flag_suggestion("all", "-a")]);
+        s.apply(Action::FocusSuggestions);
+        s.apply(Action::Cancel);
+        assert_eq!(s.mode, Mode::Normal);
     }
 }

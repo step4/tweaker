@@ -126,6 +126,7 @@ Labels run `1–9` then `A–Z` (uppercase, so lowercase letters are free as com
 | `i` then hint    | Insert a new token **before** that position |
 | `u`              | Undo last change                            |
 | `Ctrl+R`         | Redo                                        |
+| `Tab`            | Browse suggestions panel (if available)     |
 | `Enter`          | Accept and run (or print, in widget mode)   |
 | `Esc`            | Cancel — exit without running               |
 
@@ -143,6 +144,21 @@ The token underlines and a real cursor appears at its position. Surrounding toke
 | `Ctrl+S`            | Cycle quote style (none → `'` → `"`) |
 | `Enter`             | Commit edit                 |
 | `Esc`               | Cancel edit — token reverts |
+
+### Suggestions panel
+
+When a tldr page exists for the current command (requires [tealdeer](https://github.com/tealdeer-rs/tealdeer) to be installed and its cache populated), or a man page is available, a suggestions panel appears alongside the tweak box.
+
+Press `Tab` in normal mode to focus the panel:
+
+| Key         | Action                                           |
+| ----------- | ------------------------------------------------ |
+| `↑` / `k`   | Move selection up                                |
+| `↓` / `j`   | Move selection down                              |
+| `Enter`     | Apply — replace all tokens (tldr) or append flag (man page) |
+| `Tab` / `Esc` | Return to normal mode without applying         |
+
+Applied suggestions are undoable with `u`.
 
 ### Undo / redo
 
