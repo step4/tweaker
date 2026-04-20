@@ -1,3 +1,4 @@
+use crate::state::{Action, HintOp, Mode, Outcome, State};
 use crate::tokens;
 use anyhow::Result;
 use crossterm::{
@@ -110,19 +111,20 @@ const CMD_ROW: u16 = 2;
 const CMD_COL: u16 = 2;
 
 pub fn tweak(cmd: &str) -> Result<Option<String>> {
-    let mut tokens = tokens::split(cmd)?;
+    let initial = tokens::split(cmd)?;
+    let mut state = State::new(initial);
     let _g = RawGuard::enter()?;
     let mut out = stderr();
-    let mut status = String::from(DEFAULT_STATUS);
     let mut status_expires: Option<Instant> = None;
+
     loop {
-        draw_hints(&mut out, &tokens, &status)?;
+        draw(&mut out, &state)?;
 
         let k = match status_expires {
             Some(deadline) => match read_key_until(deadline)? {
                 Some(k) => k,
                 None => {
-                    status = DEFAULT_STATUS.into();
+                    state.status = None;
                     status_expires = None;
                     continue;
                 }
@@ -130,102 +132,62 @@ pub fn tweak(cmd: &str) -> Result<Option<String>> {
             None => read_key()?,
         };
 
-        let mut transient: Option<String> = None;
-        let mut quit = false;
-        let mut accept = false;
+        let Some(action) = key_to_action(&k, &state.mode) else {
+            continue;
+        };
 
-        match k.code {
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => quit = true,
-            KeyCode::Enter => accept = true,
-            KeyCode::Char('d') => {
-                status = "d — press a hint to delete (Esc to cancel)".into();
-                status_expires = None;
-                draw_hints(&mut out, &tokens, &status)?;
-                transient = Some(match read_hint(tokens.len())? {
-                    Some(idx) => {
-                        tokens.remove(idx);
-                        format!("deleted token {}", idx + 1)
-                    }
-                    None => "delete cancelled".into(),
-                });
-            }
-            KeyCode::Char('a') | KeyCode::Char('i') => {
-                let before = matches!(k.code, KeyCode::Char('i'));
-                let (word, label) = if before {
-                    ("before", "i")
-                } else {
-                    ("after", "a")
-                };
-                status = format!("{label} — press a hint to insert {word} (Esc to cancel)");
-                status_expires = None;
-                draw_hints(&mut out, &tokens, &status)?;
-                transient = Some(match read_hint(tokens.len())? {
-                    Some(idx) => {
-                        let new_idx = if before { idx } else { idx + 1 };
-                        tokens.insert(
-                            new_idx,
-                            tokens::Token {
-                                text: String::new(),
-                                quoted: false,
-                            },
-                        );
-                        let committed = edit_inline(&mut out, &mut tokens, new_idx)?;
-                        if !committed || tokens[new_idx].text.is_empty() {
-                            tokens.remove(new_idx);
-                            "insert cancelled".into()
-                        } else {
-                            format!("inserted {word} token {}", idx + 1)
-                        }
-                    }
-                    None => "insert cancelled".into(),
-                });
-            }
-            KeyCode::Char(ch) => {
-                if let Some(idx) = tokens::index_for(ch) {
-                    transient = Some(if idx < tokens.len() {
-                        if edit_inline(&mut out, &mut tokens, idx)? {
-                            format!("edited [{}]", ch)
-                        } else {
-                            format!("cancelled [{}]", ch)
-                        }
-                    } else {
-                        format!("no token at [{}]", ch)
-                    });
-                }
-            }
-            _ => {}
+        match state.apply(action) {
+            Outcome::Quit => return Ok(None),
+            Outcome::Accept => return Ok(Some(tokens::render(&state.tokens))),
+            Outcome::Continue => {}
         }
 
-        if quit {
-            return Ok(None);
-        }
-        if accept {
-            return Ok(Some(tokens::render(&tokens)));
-        }
-        if let Some(msg) = transient {
-            status = msg;
-            status_expires = Some(Instant::now() + STATUS_TTL);
-        }
+        status_expires = match state.mode {
+            Mode::Normal if state.status.is_some() => Some(Instant::now() + STATUS_TTL),
+            _ => None,
+        };
     }
 }
 
-/// Read one keystroke as a hint; returns None on Esc or an unknown key.
-fn read_hint(n_tokens: usize) -> Result<Option<usize>> {
-    let k = read_key()?;
-    match k.code {
-        KeyCode::Esc => Ok(None),
-        KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => Ok(None),
-        KeyCode::Char(ch) => match tokens::index_for(ch) {
-            Some(i) if i < n_tokens => Ok(Some(i)),
-            _ => Ok(None),
-        },
-        _ => Ok(None),
+fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
+    use KeyCode::*;
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    match (&k.code, mode) {
+        (Esc, _) | (Char('c'), _) if matches!(k.code, Esc) || ctrl => Some(Action::Cancel),
+
+        // Editing mode — character keys go into the buffer.
+        (Enter, Mode::Editing { .. }) => Some(Action::Commit),
+        (Char('u'), Mode::Editing { .. }) if ctrl => Some(Action::ClearLine),
+        (Backspace, Mode::Editing { .. }) => Some(Action::Backspace),
+        (Delete, Mode::Editing { .. }) => Some(Action::Delete),
+        (Left, Mode::Editing { .. }) => Some(Action::Left),
+        (Right, Mode::Editing { .. }) => Some(Action::Right),
+        (Home, Mode::Editing { .. }) => Some(Action::Home),
+        (End, Mode::Editing { .. }) => Some(Action::End),
+        (Char(c), Mode::Editing { .. }) if !ctrl => Some(Action::Char(*c)),
+
+        // Normal / AwaitHint.
+        (Enter, _) => Some(Action::Commit),
+        (Char('d'), Mode::Normal) => Some(Action::Prefix(HintOp::Delete)),
+        (Char('a'), Mode::Normal) => Some(Action::Prefix(HintOp::InsertAfter)),
+        (Char('i'), Mode::Normal) => Some(Action::Prefix(HintOp::InsertBefore)),
+        (Char(ch), _) => Some(Action::Hint(*ch)),
+
+        _ => None,
     }
 }
 
-fn draw_hints<W: Write>(out: &mut W, tokens: &[tokens::Token], status: &str) -> Result<()> {
-    let (rendered, spans) = tokens::render_with_spans(tokens);
+fn draw<W: Write>(out: &mut W, state: &State) -> Result<()> {
+    match &state.mode {
+        Mode::Normal | Mode::AwaitHint(_) => draw_hints(out, state),
+        Mode::Editing {
+            idx, buf, cursor, ..
+        } => draw_editing(out, state, *idx, buf, *cursor),
+    }
+}
+
+fn draw_hints<W: Write>(out: &mut W, state: &State) -> Result<()> {
+    let (rendered, spans) = tokens::render_with_spans(&state.tokens);
     queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
     queue!(
         out,
@@ -233,11 +195,8 @@ fn draw_hints<W: Write>(out: &mut W, tokens: &[tokens::Token], status: &str) -> 
         Print("tweak command\r\n"),
         SetAttribute(Attribute::Reset)
     )?;
-
-    // Command on its own line.
     queue!(out, cursor::MoveTo(CMD_COL, CMD_ROW), Print(&rendered))?;
 
-    // Labels on the row below, aligned to each token's first column.
     for (i, (start, _len)) in spans.iter().enumerate() {
         let Some(lbl) = tokens::label(i) else { break };
         let col = CMD_COL + *start as u16;
@@ -252,124 +211,101 @@ fn draw_hints<W: Write>(out: &mut W, tokens: &[tokens::Token], status: &str) -> 
         )?;
     }
 
-    let (_, rows) = terminal::size()?;
-    queue!(
-        out,
-        cursor::MoveTo(0, rows.saturating_sub(1)),
-        Clear(ClearType::CurrentLine),
-        SetAttribute(Attribute::Dim),
-        Print(status),
-        SetAttribute(Attribute::Reset),
-    )?;
+    write_status(out, &status_text(state))?;
     out.flush()?;
     Ok(())
 }
 
-/// Edit token `idx` in place at its actual column in the rendered command.
-/// Returns Ok(true) on commit, Ok(false) on cancel.
-fn edit_inline<W: Write>(out: &mut W, tokens: &mut Vec<tokens::Token>, idx: usize) -> Result<bool> {
-    let original = tokens[idx].clone();
-    let mut buf: Vec<char> = tokens[idx].text.chars().collect();
-    let mut cursor_pos = buf.len();
-
-    loop {
-        // Reflect current buffer into the token so render_with_spans gives us real columns.
-        tokens[idx].text = buf.iter().collect();
-        tokens[idx].quoted = needs_quote(&tokens[idx].text);
-        let (rendered, spans) = tokens::render_with_spans(tokens);
-        let (tok_start, tok_len) = spans[idx];
-
-        queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-        queue!(
-            out,
-            SetAttribute(Attribute::Bold),
-            Print("tweak command\r\n"),
-            SetAttribute(Attribute::Reset)
-        )?;
-        // Print everything before the edited token plainly.
-        queue!(out, cursor::MoveTo(CMD_COL, CMD_ROW))?;
-        let before: String = rendered.chars().take(tok_start).collect();
-        let token_str: String = rendered.chars().skip(tok_start).take(tok_len).collect();
-        let after: String = rendered.chars().skip(tok_start + tok_len).collect();
-        queue!(
-            out,
-            Print(before),
-            SetAttribute(Attribute::Underlined),
-            SetForegroundColor(Color::Yellow),
-            Print(&token_str),
-            ResetColor,
-            SetAttribute(Attribute::Reset),
-            Print(after),
-        )?;
-
-        // Status line.
-        let (_, rows) = terminal::size()?;
-        queue!(
-            out,
-            cursor::MoveTo(0, rows.saturating_sub(1)),
-            Clear(ClearType::CurrentLine),
-            SetAttribute(Attribute::Dim),
-            Print("editing · Enter commit · Esc cancel · Ctrl-U clear"),
-            SetAttribute(Attribute::Reset),
-        )?;
-
-        // Compute cursor column inside the rendered token. If the token is quoted,
-        // there's an opening quote char before the buffer content — offset by that.
-        let quote_prefix = if tokens[idx].quoted { 1 } else { 0 };
-        let cursor_col = CMD_COL + (tok_start + quote_prefix + cursor_pos) as u16;
-        queue!(out, cursor::MoveTo(cursor_col, CMD_ROW), cursor::Show)?;
-        out.flush()?;
-
-        let k = read_key()?;
-        match k.code {
-            KeyCode::Esc => {
-                tokens[idx] = original;
-                queue!(out, cursor::Hide)?;
-                return Ok(false);
-            }
-            KeyCode::Enter => {
-                queue!(out, cursor::Hide)?;
-                return Ok(true);
-            }
-            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                buf.clear();
-                cursor_pos = 0;
-            }
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                tokens[idx] = original;
-                queue!(out, cursor::Hide)?;
-                return Ok(false);
-            }
-            KeyCode::Char(c) => {
-                buf.insert(cursor_pos, c);
-                cursor_pos += 1;
-            }
-            KeyCode::Backspace => {
-                if cursor_pos > 0 {
-                    cursor_pos -= 1;
-                    buf.remove(cursor_pos);
-                }
-            }
-            KeyCode::Delete => {
-                if cursor_pos < buf.len() {
-                    buf.remove(cursor_pos);
-                }
-            }
-            KeyCode::Left => cursor_pos = cursor_pos.saturating_sub(1),
-            KeyCode::Right => {
-                if cursor_pos < buf.len() {
-                    cursor_pos += 1;
-                }
-            }
-            KeyCode::Home => cursor_pos = 0,
-            KeyCode::End => cursor_pos = buf.len(),
-            _ => {}
+fn draw_editing<W: Write>(
+    out: &mut W,
+    state: &State,
+    idx: usize,
+    buf: &[char],
+    cursor_pos: usize,
+) -> Result<()> {
+    // Render with the edited token shown as the buffer contents (unquoted,
+    // so the user sees exactly what they're typing).
+    let mut line = String::new();
+    let mut tok_start = 0usize;
+    let mut tok_len = 0usize;
+    for (i, t) in state.tokens.iter().enumerate() {
+        if i > 0 {
+            line.push(' ');
         }
+        if i == idx {
+            tok_start = line.chars().count();
+            let s: String = buf.iter().collect();
+            tok_len = s.chars().count();
+            line.push_str(&s);
+        } else {
+            let r = if t.quoted || t.text.is_empty() {
+                shell_words::quote(&t.text).into_owned()
+            } else {
+                t.text.clone()
+            };
+            line.push_str(&r);
+        }
+    }
+
+    queue!(out, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+    queue!(
+        out,
+        SetAttribute(Attribute::Bold),
+        Print("tweak command\r\n"),
+        SetAttribute(Attribute::Reset)
+    )?;
+    queue!(out, cursor::MoveTo(CMD_COL, CMD_ROW))?;
+    let before: String = line.chars().take(tok_start).collect();
+    let tok: String = line.chars().skip(tok_start).take(tok_len).collect();
+    let after: String = line.chars().skip(tok_start + tok_len).collect();
+    queue!(
+        out,
+        Print(before),
+        SetAttribute(Attribute::Underlined),
+        SetForegroundColor(Color::Yellow),
+        Print(&tok),
+        ResetColor,
+        SetAttribute(Attribute::Reset),
+        Print(after),
+    )?;
+
+    write_status(out, &status_text(state))?;
+
+    let cursor_col = CMD_COL + (tok_start + cursor_pos) as u16;
+    queue!(out, cursor::MoveTo(cursor_col, CMD_ROW), cursor::Show)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn status_text(state: &State) -> String {
+    if let Some(s) = &state.status {
+        return s.clone();
+    }
+    match &state.mode {
+        Mode::Normal => DEFAULT_STATUS.into(),
+        Mode::AwaitHint(HintOp::Delete) => "d — press a hint to delete (Esc to cancel)".into(),
+        Mode::AwaitHint(HintOp::InsertBefore) => {
+            "i — press a hint to insert before (Esc to cancel)".into()
+        }
+        Mode::AwaitHint(HintOp::InsertAfter) => {
+            "a — press a hint to insert after (Esc to cancel)".into()
+        }
+        Mode::Editing { .. } => "editing · Enter commit · Esc cancel · Ctrl-U clear".into(),
     }
 }
 
-fn needs_quote(s: &str) -> bool {
-    s.is_empty() || s.chars().any(|c| c.is_whitespace() || "\"'\\$`".contains(c))
+fn write_status<W: Write>(out: &mut W, text: &str) -> Result<()> {
+    let (_, rows) = terminal::size()?;
+    queue!(
+        out,
+        cursor::Hide,
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        Clear(ClearType::CurrentLine),
+        SetAttribute(Attribute::Dim),
+        Print(text),
+        SetAttribute(Attribute::Reset),
+    )?;
+    Ok(())
 }
 
 fn truncate(s: &str, max: usize) -> String {

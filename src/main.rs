@@ -1,4 +1,5 @@
 mod history;
+mod state;
 mod tokens;
 mod tui;
 

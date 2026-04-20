@@ -13,13 +13,17 @@ pub fn split(cmd: &str) -> Result<Vec<Token>> {
     Ok(parts
         .into_iter()
         .map(|t| {
-            let needs_quote = t.chars().any(|c| c.is_whitespace() || "\"'\\$`".contains(c));
+            let q = needs_quote(&t);
             Token {
                 text: t,
-                quoted: needs_quote,
+                quoted: q,
             }
         })
         .collect())
+}
+
+pub fn needs_quote(s: &str) -> bool {
+    s.is_empty() || s.chars().any(|c| c.is_whitespace() || "\"'\\$`".contains(c))
 }
 
 pub fn render(tokens: &[Token]) -> String {
