@@ -31,19 +31,19 @@ pub fn load(explicit: Option<&Path>, limit: usize) -> Result<Vec<String>> {
 /// Strip the zsh extended-history prefix ": 1234567890:0;" if present.
 pub(crate) fn parse_line(line: &str) -> &str {
     let trimmed = line.trim_end_matches('\\').trim();
-    if let Some(rest) = trimmed.strip_prefix(':') {
-        if let Some(idx) = rest.find(';') {
-            return rest[idx + 1..].trim();
-        }
+    if let Some(rest) = trimmed.strip_prefix(':')
+        && let Some(idx) = rest.find(';')
+    {
+        return rest[idx + 1..].trim();
     }
     trimmed
 }
 
 fn detect() -> Result<PathBuf> {
-    if let Ok(p) = std::env::var("HISTFILE") {
-        if !p.is_empty() {
-            return Ok(PathBuf::from(p));
-        }
+    if let Ok(p) = std::env::var("HISTFILE")
+        && !p.is_empty()
+    {
+        return Ok(PathBuf::from(p));
     }
 
     #[cfg(windows)]

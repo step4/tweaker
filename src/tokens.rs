@@ -6,7 +6,7 @@ pub struct Token {
     pub text: String,
     /// Exact form as it appeared in the original command (e.g. `'^g'`).
     /// Used verbatim on render so quoting style is never lost.
-    /// After an edit, recomputed via `quote_for_render`.
+    /// After an edit, recomputed via `QuoteStyle::apply`.
     pub original: String,
 }
 
@@ -30,8 +30,7 @@ pub fn split(cmd: &str) -> Result<Vec<Token>> {
         let mut original = String::new();
 
         // Consume one token (may be multiple adjacent quoted/unquoted segments).
-        loop {
-            let Some(&ch) = chars.peek() else { break };
+        while let Some(&ch) = chars.peek() {
             if ch.is_whitespace() {
                 break;
             }
@@ -127,11 +126,6 @@ pub fn render_with_spans(tokens: &[Token]) -> (String, Vec<(usize, usize)>) {
         spans.push((start, len));
     }
     (out, spans)
-}
-
-/// Quote `text` for re-insertion as a new token (e.g. after an edit).
-pub fn quote_for_render(text: &str) -> String {
-    posix_quote(text)
 }
 
 /// Minimal POSIX single-quote logic — equivalent to the removed shell-words::quote.
@@ -303,7 +297,7 @@ mod tests {
     fn edited_token_gets_requoted_for_render() {
         // After an edit, original is recomputed. A token with whitespace must be quoted.
         let text = "hi there".to_string();
-        let original = quote_for_render(&text);
+        let original = QuoteStyle::None.apply(&text);
         let reparsed = split(&original).unwrap();
         assert_eq!(reparsed[0].text, "hi there");
     }

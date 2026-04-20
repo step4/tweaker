@@ -85,15 +85,15 @@ impl State {
         let snapshot = self.tokens.clone();
         let mode = std::mem::replace(&mut self.mode, Mode::Normal);
         let (new_mode, outcome) = match mode {
-            Mode::Normal => self.from_normal(action),
-            Mode::AwaitHint(op) => self.from_await(op, action),
+            Mode::Normal => self.handle_normal(action),
+            Mode::AwaitHint(op) => self.handle_await(op, action),
             Mode::Editing {
                 idx,
                 buf,
                 cursor,
                 inserted,
                 quote_style,
-            } => self.from_editing(idx, buf, cursor, inserted, quote_style, action),
+            } => self.handle_editing(idx, buf, cursor, inserted, quote_style, action),
         };
         self.mode = new_mode;
 
@@ -142,7 +142,7 @@ impl State {
         Outcome::Continue
     }
 
-    fn from_normal(&mut self, action: Action) -> (Mode, Outcome) {
+    fn handle_normal(&mut self, action: Action) -> (Mode, Outcome) {
         match action {
             Action::Cancel => (Mode::Normal, Outcome::Quit),
             Action::Commit => (Mode::Normal, Outcome::Accept),
@@ -172,7 +172,7 @@ impl State {
         }
     }
 
-    fn from_await(&mut self, op: HintOp, action: Action) -> (Mode, Outcome) {
+    fn handle_await(&mut self, op: HintOp, action: Action) -> (Mode, Outcome) {
         match action {
             Action::Cancel => {
                 self.status = Some("cancelled".into());
@@ -220,7 +220,7 @@ impl State {
         }
     }
 
-    fn from_editing(
+    fn handle_editing(
         &mut self,
         idx: usize,
         mut buf: Vec<char>,
