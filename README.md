@@ -29,6 +29,24 @@ cargo build --release
 
 ---
 
+## Standalone usage
+
+Without shell integration, tweaker runs the accepted command directly:
+
+```sh
+tweaker
+tweaker --limit 50
+tweaker --history-file /path/to/custom_history
+```
+
+To print the result to stdout instead of executing (what the shell widgets use internally):
+
+```sh
+tweaker --print
+```
+
+---
+
 ## Shell integration
 
 The recommended way to use tweaker is via a shell keybinding. The widget runs tweaker silently, then places the final command into the shell input buffer so the shell records it in history naturally. The `tweaker` invocation itself is never recorded.
@@ -59,24 +77,6 @@ Binds **Ctrl+G** via `Set-PSReadLineKeyHandler`. Requires PSReadLine (included w
 
 ---
 
-## Standalone usage
-
-Without shell integration, tweaker runs the accepted command directly:
-
-```sh
-tweaker
-tweaker --limit 50
-tweaker --history-file /path/to/custom_history
-```
-
-To print the result to stdout instead of executing (what the shell widgets use internally):
-
-```sh
-tweaker --print
-```
-
----
-
 ## History file detection
 
 tweaker looks for a history file in this order:
@@ -94,14 +94,14 @@ tweaker looks for a history file in this order:
 
 Press **Ctrl+G** (or run `tweaker`) to open the history picker.
 
-| Key | Action |
-|-----|--------|
-| `↑` / `k` | Move up |
-| `↓` / `j` | Move down |
-| `PgUp` / `PgDn` | Jump 10 entries |
-| `Home` / `End` | First / last entry |
-| `Enter` | Select and open tweak screen |
-| `Esc` / `q` | Cancel |
+| Key             | Action                       |
+| --------------- | ---------------------------- |
+| `↑` / `k`       | Move up                      |
+| `↓` / `j`       | Move down                    |
+| `PgUp` / `PgDn` | Jump 10 entries              |
+| `Home` / `End`  | First / last entry           |
+| `Enter`         | Select and open tweak screen |
+| `Esc` / `q`     | Cancel                       |
 
 ---
 
@@ -118,30 +118,30 @@ Labels run `1–9` then `A–Z` (uppercase, so lowercase letters are free as com
 
 ### Normal mode keys
 
-| Key | Action |
-|-----|--------|
-| `1`–`9`, `A`–`Z` | Edit that token in place |
-| `d` then hint | Delete that token |
-| `a` then hint | Insert a new token **after** that position |
-| `i` then hint | Insert a new token **before** that position |
-| `u` | Undo last change |
-| `Ctrl+R` | Redo |
-| `Enter` | Accept and run (or print, in widget mode) |
-| `Esc` | Cancel — exit without running |
+| Key              | Action                                      |
+| ---------------- | ------------------------------------------- |
+| `1`–`9`, `A`–`Z` | Edit that token in place                    |
+| `d` then hint    | Delete that token                           |
+| `a` then hint    | Insert a new token **after** that position  |
+| `i` then hint    | Insert a new token **before** that position |
+| `u`              | Undo last change                            |
+| `Ctrl+R`         | Redo                                        |
+| `Enter`          | Accept and run (or print, in widget mode)   |
+| `Esc`            | Cancel — exit without running               |
 
 ### Editing a token
 
 The token underlines and a real cursor appears at its position. Surrounding tokens shift as you type.
 
-| Key | Action |
-|-----|--------|
-| Type | Insert character at cursor |
-| `←` / `→` | Move cursor |
-| `Home` / `End` | Jump to start / end |
-| `Backspace` / `Del` | Delete character |
-| `Ctrl+U` | Clear the token |
-| `Enter` | Commit edit |
-| `Esc` | Cancel edit — token reverts |
+| Key                 | Action                      |
+| ------------------- | --------------------------- |
+| Type                | Insert character at cursor  |
+| `←` / `→`           | Move cursor                 |
+| `Home` / `End`      | Jump to start / end         |
+| `Backspace` / `Del` | Delete character            |
+| `Ctrl+U`            | Clear the token             |
+| `Enter`             | Commit edit                 |
+| `Esc`               | Cancel edit — token reverts |
 
 ### Undo / redo
 
@@ -171,10 +171,10 @@ tweaker init <SHELL>
 
 ## Platform support
 
-| Platform | Terminal | History |
-|----------|----------|---------|
-| Linux | Full (crossterm + ratatui) | zsh / bash |
-| macOS | Full | zsh / bash |
-| Windows (Terminal) | Full | PSReadLine |
-| Windows (Git Bash) | Full | `.bash_history` |
-| WSL | Full | zsh / bash |
+| Platform           | Terminal                   | History         |
+| ------------------ | -------------------------- | --------------- |
+| Linux              | Full (crossterm + ratatui) | zsh / bash      |
+| macOS              | Full                       | zsh / bash      |
+| Windows (Terminal) | Full                       | PSReadLine      |
+| Windows (Git Bash) | Full                       | `.bash_history` |
+| WSL                | Full                       | zsh / bash      |

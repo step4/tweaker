@@ -1,6 +1,6 @@
 use crate::state::{Action, HintOp, Mode, Outcome, State};
-use crate::tokens::QuoteStyle;
 use crate::tokens;
+use crate::tokens::QuoteStyle;
 use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
@@ -120,8 +120,7 @@ pub fn pick_entry(entries: &[String]) -> Result<Option<String>> {
 }
 
 fn draw_picker(f: &mut Frame, entries: &[String], sel: usize, list_state: &mut ListState) {
-    let chunks =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
 
     let items: Vec<ListItem> = entries
         .iter()
@@ -145,7 +144,10 @@ fn draw_picker(f: &mut Frame, entries: &[String], sel: usize, list_state: &mut L
 
     let title = Line::from(vec![
         Span::raw(" "),
-        Span::styled("tweaker", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "tweaker",
+            Style::new().fg(TITLE).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" · history ", Style::new().fg(SUBTLE)),
     ]);
 
@@ -160,20 +162,14 @@ fn draw_picker(f: &mut Frame, entries: &[String], sel: usize, list_state: &mut L
 
     let help = Paragraph::new(Line::from(vec![
         Span::raw(" "),
-        Span::styled(
-            "↑/↓",
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("↑/↓", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" navigate  ", Style::new().fg(SUBTLE)),
         Span::styled(
             "Enter",
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" select  ", Style::new().fg(SUBTLE)),
-        Span::styled(
-            "Esc",
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(" cancel", Style::new().fg(SUBTLE)),
     ]));
     f.render_widget(help, chunks[1]);
@@ -229,7 +225,7 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
         // Editing mode takes character keys for the buffer.
         (Enter, Mode::Editing { .. }) => Some(Action::Commit),
         (Char('u'), Mode::Editing { .. }) if ctrl => Some(Action::ClearLine),
-        (Char('q'), Mode::Editing { .. }) if ctrl => Some(Action::ToggleQuote),
+        (Char('s'), Mode::Editing { .. }) if ctrl => Some(Action::ToggleQuote),
         (Backspace, Mode::Editing { .. }) => Some(Action::Backspace),
         (Delete, Mode::Editing { .. }) => Some(Action::Delete),
         (Left, Mode::Editing { .. }) => Some(Action::Left),
@@ -268,7 +264,10 @@ fn draw_tweak(f: &mut Frame, state: &State) {
 
     let title = Line::from(vec![
         Span::raw(" "),
-        Span::styled("tweaker", Style::new().fg(TITLE).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "tweaker",
+            Style::new().fg(TITLE).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" · ", Style::new().fg(SUBTLE)),
         Span::styled(mode_label, mode_style.add_modifier(Modifier::BOLD)),
         Span::raw(" "),
@@ -408,7 +407,11 @@ fn build_editing_view(
     ));
 
     // Cursor offset: token column + optional opening quote + position in buffer.
-    (cmd, hints, Some(token_col + quote_style.prefix_len() + cursor))
+    (
+        cmd,
+        hints,
+        Some(token_col + quote_style.prefix_len() + cursor),
+    )
 }
 
 fn status_line(state: &State) -> Line<'static> {
@@ -438,10 +441,7 @@ fn status_line(state: &State) -> Line<'static> {
                     format!(" — press a hint to {word}  "),
                     Style::new().fg(SUBTLE),
                 ),
-                Span::styled(
-                    "Esc",
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                ),
+                Span::styled("Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
                 Span::styled(" cancel", Style::new().fg(SUBTLE)),
             ])
         }
@@ -451,8 +451,14 @@ fn status_line(state: &State) -> Line<'static> {
                 "✎ editing  ",
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(quote_style.label(), Style::new().fg(HIGHLIGHT).add_modifier(Modifier::BOLD)),
-            Span::styled("  Enter", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                quote_style.label(),
+                Style::new().fg(HIGHLIGHT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  Enter",
+                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" commit  ", Style::new().fg(SUBTLE)),
             Span::styled("Esc", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(" cancel  ", Style::new().fg(SUBTLE)),
@@ -463,10 +469,7 @@ fn status_line(state: &State) -> Line<'static> {
         ]),
         (Some(msg), Mode::Normal) => Line::from(vec![
             Span::raw(" "),
-            Span::styled(
-                "✓ ",
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("✓ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::styled(msg.clone(), Style::new().fg(ACCENT)),
         ]),
         (None, Mode::Normal) => Line::from(Span::styled(
@@ -475,4 +478,3 @@ fn status_line(state: &State) -> Line<'static> {
         )),
     }
 }
-
