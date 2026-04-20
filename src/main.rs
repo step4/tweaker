@@ -5,7 +5,7 @@ mod tui;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, ExitStatus};
 
 #[derive(Parser)]
 #[command(
@@ -43,6 +43,7 @@ enum Cmd {
 enum Shell {
     Zsh,
     Bash,
+    Powershell,
 }
 
 const ZSH_INIT: &str = r##"# tweaker zsh integration — source via: eval "$(tweaker init zsh)"
@@ -69,6 +70,18 @@ __tweaker_widget() {
 bind -x '"\C-g": __tweaker_widget'
 "##;
 
+const POWERSHELL_INIT: &str = r##"# tweaker PowerShell integration — add to $PROFILE:
+#   Add-Content $PROFILE "$(tweaker init powershell)"
+function Invoke-Tweaker {
+    # TUI renders to stderr; stdout carries the final command.
+    $cmd = tweaker --print
+    if ($cmd) {
+        [Microsoft.PowerShell.PSConsoleReadLine]::Insert($cmd)
+    }
+}
+Set-PSReadLineKeyHandler -Key 'Ctrl+g' -ScriptBlock { Invoke-Tweaker }
+"##;
+
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
 
@@ -76,6 +89,7 @@ fn main() -> Result<ExitCode> {
         let snippet = match shell {
             Shell::Zsh => ZSH_INIT,
             Shell::Bash => BASH_INIT,
+            Shell::Powershell => POWERSHELL_INIT,
         };
         print!("{snippet}");
         return Ok(ExitCode::SUCCESS);
@@ -98,11 +112,32 @@ fn main() -> Result<ExitCode> {
     }
 
     eprintln!("\x1b[2m$ {out}\x1b[0m");
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let status = Command::new(&shell)
-        .arg("-c")
-        .arg(&out)
-        .status()
-        .with_context(|| format!("spawning {shell}"))?;
+    let status = spawn_in_shell(&out)?;
     Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+fn spawn_in_shell(cmd: &str) -> Result<ExitStatus> {
+    #[cfg(windows)]
+    {
+        // Prefer $SHELL (Git Bash / WSL interop), fall back to PowerShell.
+        if let Ok(shell) = std::env::var("SHELL") {
+            if let Ok(s) = Command::new(&shell).arg("-c").arg(cmd).status() {
+                return Ok(s);
+            }
+        }
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", cmd])
+            .status()
+            .context("spawning powershell.exe")
+    }
+
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        Command::new(&shell)
+            .arg("-c")
+            .arg(cmd)
+            .status()
+            .with_context(|| format!("spawning {shell}"))
+    }
 }

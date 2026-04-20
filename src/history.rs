@@ -45,6 +45,16 @@ fn detect() -> Result<PathBuf> {
             return Ok(PathBuf::from(p));
         }
     }
+
+    #[cfg(windows)]
+    if let Some(data) = dirs::data_dir() {
+        // PSReadLine (PowerShell 5+) persistent history.
+        let ps = data.join(r"Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt");
+        if ps.exists() {
+            return Ok(ps);
+        }
+    }
+
     let home = dirs::home_dir().context("no home dir")?;
     for name in [".zsh_history", ".bash_history", ".history"] {
         let p = home.join(name);
