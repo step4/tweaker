@@ -29,7 +29,7 @@ pub fn load(explicit: Option<&Path>, limit: usize) -> Result<Vec<String>> {
 }
 
 /// Strip the zsh extended-history prefix ": 1234567890:0;" if present.
-fn parse_line(line: &str) -> &str {
+pub(crate) fn parse_line(line: &str) -> &str {
     let trimmed = line.trim_end_matches('\\').trim();
     if let Some(rest) = trimmed.strip_prefix(':') {
         if let Some(idx) = rest.find(';') {
@@ -53,4 +53,53 @@ fn detect() -> Result<PathBuf> {
         }
     }
     anyhow::bail!("could not find a shell history file; pass --history-file")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn parse_plain_line() {
+        assert_eq!(parse_line("ls -la"), "ls -la");
+    }
+
+    #[test]
+    fn parse_zsh_extended_prefix() {
+        assert_eq!(parse_line(": 1700000000:0;git status"), "git status");
+    }
+
+    #[test]
+    fn parse_zsh_extended_with_whitespace() {
+        assert_eq!(parse_line(": 1700000000:0;  cargo build  "), "cargo build");
+    }
+
+    #[test]
+    fn parse_line_malformed_prefix_returned_verbatim() {
+        // A leading colon with no semicolon is not the zsh extended format.
+        assert_eq!(parse_line(":no-semi-here"), ":no-semi-here");
+    }
+
+    #[test]
+    fn load_dedupes_consecutive_and_reverses() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "ls").unwrap();
+        writeln!(f, "ls").unwrap(); // duplicate of previous
+        writeln!(f, "pwd").unwrap();
+        writeln!(f, ": 1700000000:0;git status").unwrap();
+        let entries = load(Some(f.path()), 100).unwrap();
+        // Newest first, consecutive dupes collapsed.
+        assert_eq!(entries, vec!["git status", "pwd", "ls"]);
+    }
+
+    #[test]
+    fn load_respects_limit() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..10 {
+            writeln!(f, "cmd{i}").unwrap();
+        }
+        let entries = load(Some(f.path()), 3).unwrap();
+        assert_eq!(entries, vec!["cmd9", "cmd8", "cmd7"]);
+    }
 }

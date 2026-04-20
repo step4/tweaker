@@ -13,3 +13,7 @@ clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 shell-words = "1"
 dirs = "5"
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
