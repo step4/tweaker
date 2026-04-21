@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - 'release/v*'
 
 permissions:
   contents: write
@@ -65,6 +67,16 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          else
+            # refs/heads/release/v0.1  →  v0.1
+            echo "tag=${GITHUB_REF#refs/heads/release/}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -73,6 +85,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           files: |
             tweaker-linux-x86_64
