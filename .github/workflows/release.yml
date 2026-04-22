@@ -28,6 +28,13 @@ jobs:
             binary: tweaker.exe
             asset: tweaker-windows-x86_64.exe
 
+          - name: Android aarch64
+            os: ubuntu-latest
+            target: aarch64-linux-android
+            binary: tweaker
+            asset: tweaker-android-aarch64
+            use_cross: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -40,10 +47,14 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get install -y musl-tools
 
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
       - name: Build
         env:
           RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
 
       - name: Stage binary (Linux)
         if: runner.os == 'Linux'
@@ -77,3 +88,4 @@ jobs:
           files: |
             tweaker-linux-x86_64
             tweaker-windows-x86_64.exe
+            tweaker-android-aarch64
