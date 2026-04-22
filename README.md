@@ -2,15 +2,7 @@
 
 Pick a command from your shell history and tweak it interactively — change a flag, swap an argument, delete or insert a token — then run it. No retyping.
 
-```
-╭ tweaker · normal ──────────────────────────────────────────╮
-│                                                            │
-│   git commit --amend -m "fix: typo in readme"             │
-│   1   2      3       4  5                                  │
-│                                                            │
-╰────────────────────────────────────────────────────────────╯
- hint edit · a/i add · d delete · u undo · ^R redo · Enter accept · Esc cancel
-```
+![demo](assets/demo.gif)
 
 ---
 
