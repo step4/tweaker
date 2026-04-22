@@ -126,7 +126,8 @@ Labels run `1–9` then `A–Z` (uppercase, so lowercase letters are free as com
 | `i` then hint    | Insert a new token **before** that position |
 | `u`              | Undo last change                            |
 | `Ctrl+R`         | Redo                                        |
-| `Tab`            | Browse suggestions panel (if available)     |
+| `Ctrl+S`         | Toggle suggestions panel (if available)     |
+| `Tab`            | Focus suggestions panel (when visible)      |
 | `Enter`          | Accept and run (or print, in widget mode)   |
 | `Esc`            | Cancel — exit without running               |
 
@@ -149,7 +150,7 @@ The token underlines and a real cursor appears at its position. Surrounding toke
 
 When a tldr page exists for the current command (requires [tealdeer](https://github.com/tealdeer-rs/tealdeer) to be installed and its cache populated), or a man page is available, a suggestions panel appears alongside the tweak box.
 
-Press `Tab` in normal mode to focus the panel:
+Press `Ctrl+S` to show/hide the panel, then `Tab` to focus it:
 
 | Key         | Action                                           |
 | ----------- | ------------------------------------------------ |

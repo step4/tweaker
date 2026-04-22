@@ -25,13 +25,9 @@ pub fn load(cmd: &str) -> Vec<Suggestion> {
 
 fn load_tldr(cmd: &str) -> Option<Vec<Suggestion>> {
     for dir in tldr_cache_dirs() {
-        for platform in platform_subdirs() {
-            // Tealdeer ≥ 0.6 uses a "tldr-pages/" subdirectory; older versions don't.
-            for base in [
-                dir.join("tldr-pages").join("pages").join(platform),
-                dir.join("pages").join(platform),
-            ] {
-                let path = base.join(format!("{cmd}.md"));
+        for pages_dir in tldr_pages_dirs(&dir) {
+            for platform in platform_subdirs() {
+                let path = pages_dir.join(platform).join(format!("{cmd}.md"));
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let s = parse_tldr(&content);
                     if !s.is_empty() {
@@ -42,6 +38,24 @@ fn load_tldr(cmd: &str) -> Option<Vec<Suggestion>> {
         }
     }
     None
+}
+
+/// Find all `pages*` directories inside a tealdeer cache root.
+/// Tealdeer ≥ 0.6 uses `tldr-pages/pages.en/`; older versions used `pages/`.
+fn tldr_pages_dirs(cache_dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for parent in [cache_dir.join("tldr-pages"), cache_dir.to_path_buf()] {
+        if let Ok(entries) = std::fs::read_dir(&parent) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("pages") && entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    out.push(entry.path());
+                }
+            }
+        }
+    }
+    out
 }
 
 fn tldr_cache_dirs() -> Vec<PathBuf> {
@@ -257,8 +271,8 @@ mod tests {
         let mut f = std::fs::File::create(page_dir.join("mytest.md")).unwrap();
         write!(f, "{TLDR_GIT_COMMIT}").unwrap();
 
-        // Place the page where the loader expects it.
-        let cache_page_dir = dir.path().join("cache").join("tealdeer").join("tldr-pages").join("pages").join("common");
+        // Place the page where the loader expects it (pages.en mirrors real tealdeer layout).
+        let cache_page_dir = dir.path().join("cache").join("tealdeer").join("tldr-pages").join("pages.en").join("common");
         std::fs::create_dir_all(&cache_page_dir).unwrap();
         std::fs::copy(page_dir.join("mytest.md"), cache_page_dir.join("mytest.md")).unwrap();
 

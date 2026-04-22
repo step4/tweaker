@@ -50,6 +50,7 @@ pub enum Action {
     SuggestionUp,
     SuggestionDown,
     ApplySuggestion,
+    ToggleSuggestions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct State {
     pub status: Option<String>,
     /// Populated by the caller (tui layer) after construction via `suggestions::load`.
     pub suggestions: Vec<Suggestion>,
+    /// Whether the suggestions panel is currently visible.
+    pub show_suggestions: bool,
     undo: Vec<Vec<Token>>,
     redo: Vec<Vec<Token>>,
 }
@@ -77,6 +80,7 @@ impl State {
             mode: Mode::Normal,
             status: None,
             suggestions: Vec::new(),
+            show_suggestions: false,
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -178,11 +182,19 @@ impl State {
                     (Mode::Normal, Outcome::Continue)
                 }
             },
-            Action::FocusSuggestions => {
-                if self.suggestions.is_empty() {
-                    (Mode::Normal, Outcome::Continue)
-                } else {
+            Action::ToggleSuggestions => {
+                self.show_suggestions = !self.show_suggestions;
+                if self.show_suggestions && !self.suggestions.is_empty() {
                     (Mode::BrowsingSuggestions { selected: 0 }, Outcome::Continue)
+                } else {
+                    (Mode::Normal, Outcome::Continue)
+                }
+            }
+            Action::FocusSuggestions => {
+                if self.show_suggestions && !self.suggestions.is_empty() {
+                    (Mode::BrowsingSuggestions { selected: 0 }, Outcome::Continue)
+                } else {
+                    (Mode::Normal, Outcome::Continue)
                 }
             }
             _ => (Mode::Normal, Outcome::Continue),
@@ -193,6 +205,10 @@ impl State {
         let n = self.suggestions.len();
         match action {
             Action::Cancel | Action::FocusSuggestions => (Mode::Normal, Outcome::Continue),
+            Action::ToggleSuggestions => {
+                self.show_suggestions = false;
+                (Mode::Normal, Outcome::Continue)
+            }
             Action::SuggestionUp => {
                 let next = if selected == 0 { n.saturating_sub(1) } else { selected - 1 };
                 (Mode::BrowsingSuggestions { selected: next }, Outcome::Continue)
@@ -356,7 +372,8 @@ impl State {
             | Action::FocusSuggestions
             | Action::SuggestionUp
             | Action::SuggestionDown
-            | Action::ApplySuggestion => (keep(buf, cursor), Outcome::Continue),
+            | Action::ApplySuggestion
+            | Action::ToggleSuggestions => (keep(buf, cursor), Outcome::Continue),
         }
     }
 }
@@ -642,6 +659,7 @@ mod tests {
     fn with_suggestions(cmd: &str, suggestions: Vec<crate::suggestions::Suggestion>) -> State {
         let mut s = state(cmd);
         s.suggestions = suggestions;
+        s.show_suggestions = true;
         s
     }
 

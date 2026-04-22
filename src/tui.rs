@@ -238,6 +238,7 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
         (Char(c), Mode::Editing { .. }) if !ctrl => Some(Action::Char(*c)),
 
         // BrowsingSuggestions mode.
+        (Char('s'), Mode::BrowsingSuggestions { .. }) if ctrl => Some(Action::ToggleSuggestions),
         (Tab, Mode::BrowsingSuggestions { .. }) => Some(Action::FocusSuggestions),
         (Up, Mode::BrowsingSuggestions { .. }) | (Char('k'), Mode::BrowsingSuggestions { .. }) => {
             Some(Action::SuggestionUp)
@@ -248,6 +249,7 @@ fn key_to_action(k: &KeyEvent, mode: &Mode) -> Option<Action> {
         (Enter, Mode::BrowsingSuggestions { .. }) => Some(Action::ApplySuggestion),
 
         // Normal / AwaitHint.
+        (Char('s'), Mode::Normal) if ctrl => Some(Action::ToggleSuggestions),
         (Tab, Mode::Normal) => Some(Action::FocusSuggestions),
         (Enter, _) => Some(Action::Commit),
         (Char('r'), Mode::Normal) if ctrl => Some(Action::Redo),
@@ -269,7 +271,7 @@ fn draw_tweak(f: &mut Frame, state: &State) {
     let (content_area, status_area) = (vchunks[0], vchunks[1]);
 
     // Content: tweak column (left) + optional suggestions column (right).
-    let (tweak_col, sugg_col_opt) = if state.suggestions.is_empty() {
+    let (tweak_col, sugg_col_opt) = if !state.show_suggestions || state.suggestions.is_empty() {
         (content_area, None)
     } else {
         let hchunks =
@@ -566,14 +568,15 @@ fn status_line(state: &State) -> Line<'static> {
             Span::styled(msg.clone(), Style::new().fg(ACCENT)),
         ]),
         (None, Mode::Normal) => {
-            let base = format!(" {DEFAULT_STATUS}");
-            let tab_hint = if !state.suggestions.is_empty() {
-                "  · Tab suggestions"
-            } else {
+            let sugg_hint = if state.suggestions.is_empty() {
                 ""
+            } else if state.show_suggestions {
+                "  · ^S hide · Tab browse"
+            } else {
+                "  · ^S suggestions"
             };
             Line::from(Span::styled(
-                format!("{base}{tab_hint}"),
+                format!(" {DEFAULT_STATUS}{sugg_hint}"),
                 Style::new().fg(SUBTLE).add_modifier(Modifier::DIM),
             ))
         }
